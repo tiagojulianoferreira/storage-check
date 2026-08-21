@@ -119,8 +119,10 @@ if [ ${#MISSING[@]} -gt 0 ]; then
         for pkg in "${MISSING[@]}"; do
             install_package $pkg
         done
+        echo -e "${GREEN}✅ Installation completed.${NC}"
     else
         echo -e "${BLUE}ℹ️  Skipping installation. Some checks will be skipped.${NC}"
+        WARNINGS+=("Dependencies not installed: ${MISSING[*]}")
     fi
 else
     echo -e "${GREEN}✅ All dependencies are installed.${NC}"
@@ -226,34 +228,33 @@ while read -r mount usage; do
     fi
 done <<< "$DF_OUTPUT"
 
-# 4. TESTE DE LATÊNCIA (ioping)
+# 4. TESTE DE LATÊNCIA (ioping) - CORRIGIDO
 echo -e "\n${BLUE}[4] LATENCY TEST (ioping):${NC}"
 if command -v ioping &>/dev/null; then
   LATENCY_RAW=$(ioping -c 5 -q . 2>/dev/null | grep "avg" | awk "{print \$3}" | sed "s/ms//")
   if [ -n "$LATENCY_RAW" ]; then
-    LATENCY=$(echo $LATENCY_RAW | cut -d'.' -f1 2>/dev/null)
     echo "  Avg Latency: ${LATENCY_RAW}ms"
     
-    # Comparação usando bc ou fallback
-    if command -v bc &>/dev/null; then
-        if (( $(echo "$LATENCY_RAW < $EXPECTED_LATENCY" | bc -l) )); then
-            echo -e "  ${GREEN}✅ LATENCY: EXCELLENT (below ${EXPECTED_LATENCY}ms)${NC}"
-        elif (( $(echo "$LATENCY_RAW < $EXPECTED_LATENCY * 2" | bc -l) )); then
-            echo -e "  ${YELLOW}⚠️  LATENCY: ACCEPTABLE (${EXPECTED_LATENCY}-$((EXPECTED_LATENCY*2))ms)${NC}"
-        else
-            echo -e "  ${RED}❌ LATENCY: POOR (> $((EXPECTED_LATENCY*2))ms) - Check I/O scheduling${NC}"
-            PROBLEMS+=("High latency: ${LATENCY_RAW}ms (expected ${EXPECTED_LATENCY}ms)")
-        fi
+    # Remove vírgula e converte para inteiro para comparação segura
+    LATENCY_INT=$(echo $LATENCY_RAW | sed 's/,/./' | cut -d'.' -f1 2>/dev/null)
+    EXPECTED_INT=$(echo $EXPECTED_LATENCY | cut -d'.' -f1 2>/dev/null)
+    
+    # Fallback se não conseguir extrair inteiro
+    if [ -z "$LATENCY_INT" ]; then
+        LATENCY_INT=0
+    fi
+    if [ -z "$EXPECTED_INT" ]; then
+        EXPECTED_INT=1
+    fi
+    
+    # Comparação segura (sem bc)
+    if [ $LATENCY_INT -lt $EXPECTED_INT ] 2>/dev/null; then
+        echo -e "  ${GREEN}✅ LATENCY: EXCELLENT (below ${EXPECTED_LATENCY}ms)${NC}"
+    elif [ $LATENCY_INT -lt $((EXPECTED_INT * 2)) ] 2>/dev/null; then
+        echo -e "  ${YELLOW}⚠️  LATENCY: ACCEPTABLE (${EXPECTED_LATENCY}-$((EXPECTED_INT*2))ms)${NC}"
     else
-        # Fallback sem bc
-        if [ -n "$LATENCY" ] && [ $LATENCY -lt ${EXPECTED_LATENCY%.*} ] 2>/dev/null; then
-            echo -e "  ${GREEN}✅ LATENCY: EXCELLENT (below ${EXPECTED_LATENCY}ms)${NC}"
-        elif [ -n "$LATENCY" ] && [ $LATENCY -lt $((EXPECTED_LATENCY * 2)) ] 2>/dev/null; then
-            echo -e "  ${YELLOW}⚠️  LATENCY: ACCEPTABLE${NC}"
-        else
-            echo -e "  ${RED}❌ LATENCY: POOR - Check I/O scheduling${NC}"
-            PROBLEMS+=("High latency: ${LATENCY_RAW}ms")
-        fi
+        echo -e "  ${RED}❌ LATENCY: POOR (> $((EXPECTED_INT*2))ms) - Check I/O scheduling${NC}"
+        PROBLEMS+=("High latency: ${LATENCY_RAW}ms (expected ${EXPECTED_LATENCY}ms)")
     fi
   else
     echo "  ioping: no data collected"
@@ -285,7 +286,7 @@ else
   echo "  No /dev/sda found - test skipped"
 fi
 
-# 6. SAUDE SMART + REFERÊNCIA
+# 6. SAUDE SMART - CORRIGIDO (trata Status vazio)
 echo -e "\n${BLUE}[6] SMART HEALTH + WEAR REFERENCE:${NC}"
 SMART_CHECKED=0
 if command -v smartctl &>/dev/null; then
@@ -295,17 +296,32 @@ if command -v smartctl &>/dev/null; then
       WEAR=$(smartctl -A /dev/$d 2>/dev/null | grep -E "Wear_Leveling|Percent_Lifetime|Media_Wearout" | awk "{print \$10}")
       TEMP=$(smartctl -A /dev/$d 2>/dev/null | grep "Temperature_Celsius" | awk "{print \$10}")
       echo "  /dev/$d:"
+      
+      # Se SMART_RESULT estiver vazio, tenta buscar outras informações
+      if [ -z "$SMART_RESULT" ]; then
+        # Tenta obter o resultado de forma alternativa
+        SMART_RESULT=$(smartctl -H /dev/$d 2>/dev/null | grep -i "overall-health" | awk -F: "{print \$2}" | xargs)
+        if [ -z "$SMART_RESULT" ]; then
+            SMART_RESULT="UNAVAILABLE"
+        fi
+      fi
+      
       echo "    Status: $SMART_RESULT"
       [ -n "$WEAR" ] && echo "    Wear Level: ${WEAR}%"
       [ -n "$TEMP" ] && echo "    Temperature: ${TEMP}°C"
       
-      if [ -z "$SMART_RESULT" ] || [ "$SMART_RESULT" != "PASSED" ]; then
-        echo -e "    ${RED}❌ SMART: FAILED or UNAVAILABLE - Backup immediately!${NC}"
-        PROBLEMS+=("SMART failed on /dev/$d")
-      else
+      # Avaliação do SMART
+      if echo "$SMART_RESULT" | grep -qi "passed"; then
         echo -e "    ${GREEN}✅ SMART: PASSED${NC}"
+      elif echo "$SMART_RESULT" | grep -qi "unavailable"; then
+        echo -e "    ${YELLOW}⚠️  SMART: UNAVAILABLE - Check permissions or disk support${NC}"
+        WARNINGS+=("SMART unavailable on /dev/$d")
+      else
+        echo -e "    ${RED}❌ SMART: FAILED or UNKNOWN - Backup immediately!${NC}"
+        PROBLEMS+=("SMART failed on /dev/$d (status: $SMART_RESULT)")
       fi
       
+      # Temperatura
       if [ -n "$TEMP" ] && [ $TEMP -gt 65 ] 2>/dev/null; then
         echo -e "    ${RED}❌ TEMPERATURE: High (>65°C) - Improve cooling${NC}"
         PROBLEMS+=("High temperature (${TEMP}°C) on /dev/$d")
@@ -316,6 +332,7 @@ if command -v smartctl &>/dev/null; then
         echo -e "    ${GREEN}✅ TEMPERATURE: Good (<50°C)${NC}"
       fi
       
+      # Wear Level
       if [ -n "$WEAR" ] && [ $WEAR -gt 80 ] 2>/dev/null; then
         echo -e "    ${RED}❌ WEAR: Critical (>80%) - Replace disk soon${NC}"
         PROBLEMS+=("Wear level ${WEAR}% on /dev/$d")
