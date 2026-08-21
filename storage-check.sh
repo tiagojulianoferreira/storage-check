@@ -2,7 +2,7 @@
 # Storage Check - Diagnóstico READ-ONLY para Linux
 # Autor: Tiago Ferreira
 # Repositório: https://github.com/tiagojulianoferreira/storage-check
-# Versão: 2.2 - Com quadro comparativo final e lógica aprimorada
+# Versão: 2.3 - Quadro comparativo com sintaxe corrigida
 
 # Cores para output
 RED='\033[0;31m'
@@ -176,7 +176,6 @@ for d in sda sdb sdc nvme0n1 nvme1n1 vda vdb; do
   if [ -e /dev/$d ]; then
     TYPE=$(cat /sys/block/$d/queue/rotational 2>/dev/null)
     
-    # Detecta se é NVMe pelo nome
     if [[ "$d" == nvme* ]]; then
         IS_NVME=true
         DISK_TYPE="NVMe SSD"
@@ -200,7 +199,6 @@ for d in sda sdb sdc nvme0n1 nvme1n1 vda vdb; do
         EXPECTED_READ_MB=200
     fi
     
-    # Detectar RAID via mdstat
     if [ -e /proc/mdstat ]; then
         RAID_INFO=$(grep -A1 "^$d" /proc/mdstat 2>/dev/null | grep -E "raid[0-9]" | awk "{print \$1}")
         if [ -n "$RAID_INFO" ]; then
@@ -246,9 +244,8 @@ else
     WARNINGS+=("lsblk não instalado")
 fi
 
-# 3. USO DE ESPAÇO EM DISCO (FILTRA PARTIÇÕES REAIS)
+# 3. USO DE ESPAÇO EM DISCO
 echo -e "\n${BOLD}[3] USO DE ESPAÇO EM DISCO (df -hT)${NC}"
-# Filtra apenas sistemas de arquivos reais (ignora efivarfs, tmpfs, etc)
 REAL_FS=$(df -hT 2>/dev/null | grep -E "^/dev" | head -15)
 if [ -n "$REAL_FS" ]; then
     echo "$REAL_FS"
@@ -256,7 +253,6 @@ else
     echo "  Nenhum sistema de arquivos real encontrado"
 fi
 
-# Verifica uso de espaço > 90% apenas em partições reais
 DF_OUTPUT=$(df -hT 2>/dev/null | grep -E "^/dev" | awk 'NR>0 {print $7, $6}' | sed 's/%//')
 while read -r mount usage; do
     if [ -n "$usage" ] && [ "$usage" -gt 90 ] 2>/dev/null; then
@@ -268,7 +264,7 @@ while read -r mount usage; do
     fi
 done <<< "$DF_OUTPUT"
 
-# 4. USO DE INODES (FILTRA PARTIÇÕES REAIS)
+# 4. USO DE INODES
 echo -e "\n${BOLD}[4] USO DE INODES (df -iT)${NC}"
 REAL_INODES=$(df -iT 2>/dev/null | grep -E "^/dev" | head -15)
 if [ -n "$REAL_INODES" ]; then
@@ -285,9 +281,7 @@ if command -v ioping &>/dev/null; then
         LATENCY_CLEAN=$(echo $LATENCY_RAW | sed 's/,/./')
         echo "  ⏱️  Latência média: ${LATENCY_CLEAN}ms"
         
-        # Comparação segura usando bc
         if command -v bc &>/dev/null; then
-            # Converte para números com ponto decimal
             LATENCY_NUM=$(echo "$LATENCY_CLEAN" | sed 's/,/./')
             EXPECTED_NUM=$(echo "$EXPECTED_LATENCY" | sed 's/,/./')
             
@@ -316,10 +310,9 @@ else
     WARNINGS+=("ioping não instalado")
 fi
 
-# 6. TESTE DE VELOCIDADE (dd) - AJUSTADO PARA USAR O DISCO CORRETO
+# 6. TESTE DE VELOCIDADE (dd) - AJUSTADO
 echo -e "\n${BOLD}[6] TESTE DE VELOCIDADE DE LEITURA (dd)${NC}"
-if [ -n "$DISK_FOUND" ]; then
-    # Usa o disco encontrado (pode ser NVMe ou SATA)
+if [ -n "$DISK_FOUND" ] && [ -e "$DISK_FOUND" ]; then
     echo "  Testando $DISK_FOUND (pode levar alguns segundos)..."
     DD_RESULT=$(dd if=$DISK_FOUND of=/dev/null bs=1M count=500 iflag=direct 2>&1 | grep "MB/s" | awk "{print \$NF}")
     if [ -n "$DD_RESULT" ]; then
@@ -338,7 +331,7 @@ if [ -n "$DISK_FOUND" ]; then
             CHECK_RESULTS+=("🔴 VELOCIDADE: ${DD_RESULT}MB/s (Baixa)")
         fi
     else
-        echo "  Não foi possível obter velocidade do disco"
+        echo "  ⚠️ Não foi possível obter velocidade do disco"
         INFO+=("Teste de velocidade não concluído")
     fi
 else
@@ -346,7 +339,7 @@ else
     INFO+=("Teste de velocidade ignorado (sem disco detectado)")
 fi
 
-# 7. SAUDE SMART (COM SUPORTE A NVMe)
+# 7. SAUDE SMART
 echo -e "\n${BOLD}[7] SAÚDE DO DISCO (SMART)${NC}"
 SMART_CHECKED=0
 
@@ -403,7 +396,6 @@ elif [ "$IS_NVME" = true ] && ! command -v nvme &>/dev/null; then
     WARNINGS+=("nvme-cli não instalado - SMART NVMe indisponível")
 fi
 
-# Fallback para SMART tradicional (se não for NVMe ou se NVMe falhou)
 if [ $SMART_CHECKED -eq 0 ] && command -v smartctl &>/dev/null; then
     echo "  📌 Usando smartctl para leitura SMART:"
     for d in sda sdb sdc; do
@@ -434,7 +426,7 @@ if [ $SMART_CHECKED -eq 0 ]; then
     INFO+=("SMART não disponível para os discos atuais")
 fi
 
-# 8. IOSTAT COM INTERPRETAÇÃO CORRETA
+# 8. IOSTAT
 echo -e "\n${BOLD}[8] ESTATÍSTICAS DE I/O (iostat)${NC}"
 if command -v iostat &>/dev/null; then
     IOSTAT_OUT=$(iostat -x 1 2 2>/dev/null | grep -E "^sd|^nvme" | tail -1)
@@ -556,44 +548,239 @@ for dev in sda nvme0n1; do
 done
 
 # ============================================================
-# QUADRO COMPARATIVO FINAL
+# QUADRO COMPARATIVO FINAL (SINTAXE CORRIGIDA)
 # ============================================================
 
 echo -e "\n${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}${BOLD}              QUADRO COMPARATIVO - IDEAL vs DIAGNOSTICADO${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-# Cabeçalho da tabela
-echo -e "\n${BOLD}┌──────────────┬─────────────────────┬─────────────────────┬──────────────┐${NC}"
-echo -e "${BOLD}│  COMPONENTE  │      ESPERADO       │    DIAGNOSTICADO    │   STATUS     │${NC}"
-echo -e "${BOLD}├──────────────┼─────────────────────┼─────────────────────┼──────────────┤${NC}"
+# Função para obter status com cor
+get_status() {
+    local result="$1"
+    if [[ "$result" == *"🔴"* ]]; then
+        echo "${RED}🔴 RUIM${NC}"
+    elif [[ "$result" == *"🟡"* ]]; then
+        echo "${YELLOW}🟡 ATENÇÃO${NC}"
+    elif [[ "$result" == *"✅"* ]]; then
+        echo "${GREEN}✅ OK${NC}"
+    else
+        echo "${BLUE}ℹ️ INFO${NC}"
+    fi
+}
 
-# Linha: Tipo de Disco
+# Função para extrair valor diagnosticado
+get_diag_value() {
+    local result="$1"
+    echo "$result" | sed 's/^[^:]*: //' | sed 's/ (.*)//'
+}
+
+# Função para extrair status
+get_status_icon() {
+    local result="$1"
+    if [[ "$result" == *"🔴"* ]]; then
+        echo "🔴"
+    elif [[ "$result" == *"🟡"* ]]; then
+        echo "🟡"
+    elif [[ "$result" == *"✅"* ]]; then
+        echo "✅"
+    else
+        echo "ℹ️"
+    fi
+}
+
+echo ""
+echo "┌──────────────────────┬──────────────────────────┬────────────────────────────────────┐"
+echo "│ COMPONENTE           │ ESPERADO                 │ DIAGNOSTICADO                      │"
+echo "├──────────────────────┼──────────────────────────┼────────────────────────────────────┤"
+
+# Linha 1: Tipo de Disco
 DISPLAY_TYPE=$(echo "$DISK_TYPE" | xargs)
 EXPECTED_TYPE=$(echo "$DISK_TYPE" | xargs)
 if [ -n "$DISPLAY_TYPE" ]; then
-    echo "│ Disco        │ $EXPECTED_TYPE         │ $DISPLAY_TYPE         │ ${GREEN}✅ OK${NC}        │"
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Disco" "$EXPECTED_TYPE" "✅ $DISPLAY_TYPE"
 fi
 
-# Linha: Espaço em disco (pega o resultado mais crítico)
-SPACE_CRITICAL=false
+# Linha 2: Espaço (pega o mais crítico)
+SPACE_FOUND=false
 for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"ESPAÇO"* && "$result" == *"CRÍTICO"* ]]; then
-        SPACE_CRITICAL=true
+    if [[ "$result" == *"ESPAÇO"* ]]; then
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "Espaço em /" "< 90% usado" "$ICON $DIAG"
+        SPACE_FOUND=true
         break
     fi
 done
-
-if [ "$SPACE_CRITICAL" = true ]; then
-    SPACE_STATUS="${RED}🔴 CRÍTICO${NC}"
-elif [ ${#WARNINGS[@]} -gt 0 ] && [[ "${WARNINGS[*]}" == *"Uso de disco"* ]]; then
-    SPACE_STATUS="${YELLOW}🟡 ATENÇÃO${NC}"
-else
-    SPACE_STATUS="${GREEN}✅ OK${NC}"
+if [ "$SPACE_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Espaço em /" "< 90% usado" "✅ < 90%"
 fi
 
-# Linha: Latência
-LATENCY_STATUS=""
+# Linha 3: Latência
+LATENCY_FOUND=false
 for result in "${CHECK_RESULTS[@]}"; do
     if [[ "$result" == *"LATÊNCIA"* ]]; then
-        LATENCY_STATUS=$(echo "$result" | awk -F': ' '{print $2
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "Latência" "< ${EXPECTED_LATENCY}ms" "$ICON $DIAG"
+        LATENCY_FOUND=true
+        break
+    fi
+done
+if [ "$LATENCY_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Latência" "< ${EXPECTED_LATENCY}ms" "✅ ${LATENCY_CLEAN:-N/A}ms"
+fi
+
+# Linha 4: Velocidade
+SPEED_FOUND=false
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"VELOCIDADE"* ]]; then
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "$ICON $DIAG"
+        SPEED_FOUND=true
+        break
+    fi
+done
+if [ "$SPEED_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "ℹ️ Não testado"
+fi
+
+# Linha 5: Temperatura
+TEMP_FOUND=false
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"TEMPERATURA"* ]]; then
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "Temperatura" "< 50°C" "$ICON $DIAG"
+        TEMP_FOUND=true
+        break
+    fi
+done
+if [ "$TEMP_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Temperatura" "< 50°C" "ℹ️ N/A"
+fi
+
+# Linha 6: Desgaste (Wear)
+WEAR_FOUND=false
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"DESGASTE"* ]]; then
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "Desgaste" "< 60%" "$ICON $DIAG"
+        WEAR_FOUND=true
+        break
+    fi
+done
+if [ "$WEAR_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Desgaste" "< 60%" "ℹ️ N/A"
+fi
+
+# Linha 7: Utilização
+UTIL_FOUND=false
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"UTILIZAÇÃO"* ]]; then
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "Utilização" "< 50%" "$ICON $DIAG"
+        UTIL_FOUND=true
+        break
+    fi
+done
+if [ "$UTIL_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Utilização" "< 50%" "ℹ️ N/A"
+fi
+
+# Linha 8: IOPS
+IOPS_FOUND=false
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"IOPS"* ]]; then
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "IOPS" "≥ ${EXPECTED_IOPS}" "$ICON $DIAG"
+        IOPS_FOUND=true
+        break
+    fi
+done
+if [ "$IOPS_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "IOPS" "≥ ${EXPECTED_IOPS}" "ℹ️ N/A"
+fi
+
+# Linha 9: Swap
+SWAP_FOUND=false
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"SWAP"* ]]; then
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "Swap" "< 50%" "$ICON $DIAG"
+        SWAP_FOUND=true
+        break
+    fi
+done
+if [ "$SWAP_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Swap" "< 50%" "ℹ️ N/A"
+fi
+
+# Linha 10: Scheduler
+SCHED_FOUND=false
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"SCHEDULER"* ]]; then
+        DIAG=$(get_diag_value "$result")
+        ICON=$(get_status_icon "$result")
+        printf "│ %-20s │ %-24s │ %-34s │\n" "Agendador" "none/noop/mq-deadline" "$ICON $DIAG"
+        SCHED_FOUND=true
+        break
+    fi
+done
+if [ "$SCHED_FOUND" = false ]; then
+    printf "│ %-20s │ %-24s │ %-34s │\n" "Agendador" "none/noop/mq-deadline" "ℹ️ N/A"
+fi
+
+echo "└──────────────────────┴──────────────────────────┴────────────────────────────────────┘"
+
+# ============================================================
+# LEGENDA E RESUMO DOS PROBLEMAS
+# ============================================================
+
+echo ""
+echo "📌 LEGENDA:"
+echo -e "  ${GREEN}✅ OK${NC}  - Dentro do esperado"
+echo -e "  ${YELLOW}🟡 ATENÇÃO${NC} - Requer monitoramento"
+echo -e "  ${RED}🔴 RUIM${NC}  - Requer ação imediata"
+echo -e "  ${BLUE}ℹ️ INFO${NC}  - Informação adicional"
+
+# Exibe problemas encontrados
+if [ ${#PROBLEMS[@]} -gt 0 ]; then
+    echo -e "\n${RED}${BOLD}❌ PROBLEMAS CRÍTICOS ENCONTRADOS:${NC}"
+    for problem in "${PROBLEMS[@]}"; do
+        echo -e "  ${RED}• $problem${NC}"
+    done
+else
+    echo -e "\n${GREEN}${BOLD}✅ NENHUM PROBLEMA CRÍTICO ENCONTRADO${NC}"
+fi
+
+# Exibe avisos
+if [ ${#WARNINGS[@]} -gt 0 ]; then
+    echo -e "\n${YELLOW}${BOLD}⚠️  AVISOS:${NC}"
+    for warning in "${WARNINGS[@]}"; do
+        echo -e "  ${YELLOW}• $warning${NC}"
+    done
+fi
+
+# Exibe informações
+if [ ${#INFO[@]} -gt 0 ]; then
+    echo -e "\n${BLUE}${BOLD}ℹ️  INFORMAÇÕES ADICIONAIS:${NC}"
+    for info in "${INFO[@]}"; do
+        echo -e "  ${BLUE}• $info${NC}"
+    done
+fi
+
+echo -e "\n${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+echo -e "${GREEN}✅ TODOS OS TESTES EXECUTADOS EM MODO SOMENTE LEITURA${NC}"
+echo -e "${GREEN}✅ NENHUMA ALTERAÇÃO FOI FEITA NO SISTEMA${NC}"
+echo -e "${GREEN}✅ SEGURO PARA AMBIENTES DE PRODUÇÃO${NC}"
+echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
+
+echo -e "\n${BLUE}📝 Para mais detalhes, consulte:${NC}"
+echo "  • https://github.com/tiagojulianoferreira/storage-check"
+echo ""
