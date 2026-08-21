@@ -2,7 +2,7 @@
 # Storage Check - Diagnóstico READ-ONLY para Linux
 # Autor: Tiago Ferreira
 # Repositório: https://github.com/tiagojulianoferreira/storage-check
-# Versão: 2.1 - Com suporte nativo a NVMe via nvme-cli
+# Versão: 2.2 - Com quadro comparativo final e lógica aprimorada
 
 # Cores para output
 RED='\033[0;31m'
@@ -12,10 +12,11 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# Variáveis para acumular problemas
+# Variáveis para acumular resultados
 PROBLEMS=()
 WARNINGS=()
 INFO=()
+CHECK_RESULTS=()
 
 # Função para perguntar ao usuário
 ask_confirm() {
@@ -129,9 +130,13 @@ for dep in "${dependencies[@]}"; do
     fi
 done
 
-# Se houver dependências faltando, pergunta uma única vez
+# Exibe dependências faltantes de forma clara
 if [ ${#MISSING[@]} -gt 0 ]; then
-    echo -e "${YELLOW}⚠️  Dependências faltando: ${MISSING[*]}${NC}"
+    echo -e "${YELLOW}⚠️  Dependências faltando:${NC}"
+    for pkg in "${MISSING[@]}"; do
+        echo -e "  ${YELLOW}• $pkg${NC}"
+    done
+    echo ""
     if ask_confirm "Instalar todas as dependências faltantes?"; then
         for pkg in "${MISSING[@]}"; do
             install_package $pkg
@@ -165,6 +170,7 @@ EXPECTED_LATENCY=0
 EXPECTED_READ_MB=0
 DISK_FOUND=""
 IS_NVME=false
+DISK_TYPE=""
 
 for d in sda sdb sdc nvme0n1 nvme1n1 vda vdb; do
   if [ -e /dev/$d ]; then
@@ -232,7 +238,7 @@ if [ -z "$DISK_FOUND" ]; then
 fi
 
 # 2. PARTIÇÕES E PONTOS DE MONTAGEM
-echo -e "\n${BOLD}[2] PARTIÇÕES E PONTOS DE MONTAGEM${NC}"
+echo -e "\n${BOLD}[2] PARTIÇÕES E PONTOS DE MONTAGEM (lsblk)${NC}"
 if command -v lsblk &>/dev/null; then
     lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,MODEL 2>/dev/null | grep -v "loop" | head -20
 else
@@ -240,24 +246,38 @@ else
     WARNINGS+=("lsblk não instalado")
 fi
 
-# 3. USO DE ESPAÇO E INODES
-echo -e "\n${BOLD}[3] USO DE ESPAÇO EM DISCO${NC}"
-df -hT 2>/dev/null | grep -v "tmpfs" | head -15
+# 3. USO DE ESPAÇO EM DISCO (FILTRA PARTIÇÕES REAIS)
+echo -e "\n${BOLD}[3] USO DE ESPAÇO EM DISCO (df -hT)${NC}"
+# Filtra apenas sistemas de arquivos reais (ignora efivarfs, tmpfs, etc)
+REAL_FS=$(df -hT 2>/dev/null | grep -E "^/dev" | head -15)
+if [ -n "$REAL_FS" ]; then
+    echo "$REAL_FS"
+else
+    echo "  Nenhum sistema de arquivos real encontrado"
+fi
 
-# Verifica uso de espaço > 90%
-DF_OUTPUT=$(df -hT 2>/dev/null | grep -v "tmpfs" | awk 'NR>1 {print $7, $6}' | sed 's/%//')
+# Verifica uso de espaço > 90% apenas em partições reais
+DF_OUTPUT=$(df -hT 2>/dev/null | grep -E "^/dev" | awk 'NR>0 {print $7, $6}' | sed 's/%//')
 while read -r mount usage; do
     if [ -n "$usage" ] && [ "$usage" -gt 90 ] 2>/dev/null; then
         PROBLEMS+=("Uso de disco em ${usage}% em $mount (CRÍTICO)")
+        CHECK_RESULTS+=("🔴 ESPAÇO: $mount está ${usage}% cheio (CRÍTICO)")
     elif [ -n "$usage" ] && [ "$usage" -gt 80 ] 2>/dev/null; then
         WARNINGS+=("Uso de disco em ${usage}% em $mount")
+        CHECK_RESULTS+=("🟡 ESPAÇO: $mount está ${usage}% cheio (ATENÇÃO)")
     fi
 done <<< "$DF_OUTPUT"
 
-echo -e "\n${BOLD}[4] USO DE INODES${NC}"
-df -iT 2>/dev/null | grep -v "tmpfs" | head -15
+# 4. USO DE INODES (FILTRA PARTIÇÕES REAIS)
+echo -e "\n${BOLD}[4] USO DE INODES (df -iT)${NC}"
+REAL_INODES=$(df -iT 2>/dev/null | grep -E "^/dev" | head -15)
+if [ -n "$REAL_INODES" ]; then
+    echo "$REAL_INODES"
+else
+    echo "  Nenhum sistema de arquivos real encontrado"
+fi
 
-# 5. TESTE DE LATÊNCIA (ioping)
+# 5. TESTE DE LATÊNCIA (ioping) - CORRIGIDO
 echo -e "\n${BOLD}[5] TESTE DE LATÊNCIA (ioping)${NC}"
 if command -v ioping &>/dev/null; then
     LATENCY_RAW=$(ioping -c 5 -q . 2>/dev/null | grep "avg" | awk "{print \$3}" | sed "s/ms//")
@@ -265,21 +285,23 @@ if command -v ioping &>/dev/null; then
         LATENCY_CLEAN=$(echo $LATENCY_RAW | sed 's/,/./')
         echo "  ⏱️  Latência média: ${LATENCY_CLEAN}ms"
         
+        # Comparação segura usando bc
         if command -v bc &>/dev/null; then
-            if (( $(echo "$LATENCY_CLEAN < $EXPECTED_LATENCY" | bc -l) )); then
+            # Converte para números com ponto decimal
+            LATENCY_NUM=$(echo "$LATENCY_CLEAN" | sed 's/,/./')
+            EXPECTED_NUM=$(echo "$EXPECTED_LATENCY" | sed 's/,/./')
+            
+            if (( $(echo "$LATENCY_NUM < $EXPECTED_NUM" | bc -l 2>/dev/null || echo 0) )); then
                 echo -e "  ${GREEN}✅ EXCELENTE (abaixo de ${EXPECTED_LATENCY}ms)${NC}"
-            elif (( $(echo "$LATENCY_CLEAN < $EXPECTED_LATENCY * 2" | bc -l) )); then
-                echo -e "  ${YELLOW}⚠️  ACEITÁVEL (${EXPECTED_LATENCY}-$((EXPECTED_LATENCY*2))ms)${NC}"
+                CHECK_RESULTS+=("✅ LATÊNCIA: ${LATENCY_CLEAN}ms (Excelente)")
+            elif (( $(echo "$LATENCY_NUM < $EXPECTED_NUM * 2" | bc -l 2>/dev/null || echo 0) )); then
+                echo -e "  ${YELLOW}⚠️  ACEITÁVEL (esperado ${EXPECTED_LATENCY}ms)${NC}"
                 WARNINGS+=("Latência ${LATENCY_CLEAN}ms acima do esperado (${EXPECTED_LATENCY}ms)")
+                CHECK_RESULTS+=("🟡 LATÊNCIA: ${LATENCY_CLEAN}ms (Aceitável)")
             else
                 echo -e "  ${RED}❌ LATÊNCIA MUITO ALTA (> $((EXPECTED_LATENCY*2))ms)${NC}"
                 PROBLEMS+=("Latência alta: ${LATENCY_CLEAN}ms (esperado ${EXPECTED_LATENCY}ms)")
-                
-                echo ""
-                echo -e "${YELLOW}🔍 POSSÍVEIS CAUSAS:${NC}"
-                echo "  • Uso intenso de swap (memória RAM insuficiente)"
-                echo "  • Processo com I/O pesado em execução"
-                echo "  • Sistema operacional em partição com pouco espaço"
+                CHECK_RESULTS+=("🔴 LATÊNCIA: ${LATENCY_CLEAN}ms (Muito Alta)")
             fi
         else
             echo "  ⚠️ bc não instalado - comparação precisa não disponível"
@@ -294,27 +316,34 @@ else
     WARNINGS+=("ioping não instalado")
 fi
 
-# 6. TESTE DE VELOCIDADE SEQUENCIAL (dd)
+# 6. TESTE DE VELOCIDADE (dd) - AJUSTADO PARA USAR O DISCO CORRETO
 echo -e "\n${BOLD}[6] TESTE DE VELOCIDADE DE LEITURA (dd)${NC}"
-if [ -e /dev/sda ]; then
-    echo "  Aguardando... (pode levar alguns segundos)"
-    DD_RESULT=$(dd if=/dev/sda of=/dev/null bs=1M count=500 iflag=direct 2>&1 | grep "MB/s" | awk "{print \$NF}")
+if [ -n "$DISK_FOUND" ]; then
+    # Usa o disco encontrado (pode ser NVMe ou SATA)
+    echo "  Testando $DISK_FOUND (pode levar alguns segundos)..."
+    DD_RESULT=$(dd if=$DISK_FOUND of=/dev/null bs=1M count=500 iflag=direct 2>&1 | grep "MB/s" | awk "{print \$NF}")
     if [ -n "$DD_RESULT" ]; then
         echo "  📊 Velocidade: ${DD_RESULT}MB/s"
         DD_RATE=$(echo $DD_RESULT | cut -d"." -f1 2>/dev/null)
         if [ -n "$DD_RATE" ] && [ $DD_RATE -ge $EXPECTED_READ_MB ] 2>/dev/null; then
             echo -e "  ${GREEN}✅ EXCELENTE (≥ ${EXPECTED_READ_MB}MB/s)${NC}"
+            CHECK_RESULTS+=("✅ VELOCIDADE: ${DD_RESULT}MB/s (Excelente)")
         elif [ -n "$DD_RATE" ] && [ $DD_RATE -ge $((EXPECTED_READ_MB * 60 / 100)) ] 2>/dev/null; then
             echo -e "  ${YELLOW}⚠️  ACEITÁVEL (esperado ${EXPECTED_READ_MB}MB/s)${NC}"
-            WARNINGS+=("Velocidade de leitura ${DD_RESULT}MB/s abaixo do esperado (${EXPECTED_READ_MB}MB/s)")
+            WARNINGS+=("Velocidade ${DD_RESULT}MB/s abaixo do esperado (${EXPECTED_READ_MB}MB/s)")
+            CHECK_RESULTS+=("🟡 VELOCIDADE: ${DD_RESULT}MB/s (Aceitável)")
         elif [ -n "$DD_RATE" ]; then
             echo -e "  ${RED}❌ VELOCIDADE BAIXA (< $((EXPECTED_READ_MB * 60 / 100))MB/s)${NC}"
             PROBLEMS+=("Velocidade de leitura baixa: ${DD_RESULT}MB/s")
+            CHECK_RESULTS+=("🔴 VELOCIDADE: ${DD_RESULT}MB/s (Baixa)")
         fi
+    else
+        echo "  Não foi possível obter velocidade do disco"
+        INFO+=("Teste de velocidade não concluído")
     fi
 else
-    echo "  /dev/sda não encontrado - teste ignorado"
-    INFO+=("Teste de velocidade ignorado (dispositivo NVMe)")
+    echo "  Nenhum disco encontrado para teste de velocidade"
+    INFO+=("Teste de velocidade ignorado (sem disco detectado)")
 fi
 
 # 7. SAUDE SMART (COM SUPORTE A NVMe)
@@ -326,43 +355,44 @@ if [ "$IS_NVME" = true ] && command -v nvme &>/dev/null; then
     for d in nvme0n1 nvme1n1; do
         if [ -e /dev/$d ]; then
             echo "  /dev/$d:"
-            
-            # Tenta obter smart-log do NVMe
             SMART_LOG=$(sudo nvme smart-log /dev/$d 2>/dev/null)
             if [ -n "$SMART_LOG" ]; then
-                # Extrai informações específicas
                 TEMP=$(echo "$SMART_LOG" | grep "temperature" | awk '{print $3}' | sed 's/+//' | sed 's/C//')
                 WEAR=$(echo "$SMART_LOG" | grep "percentage_used" | awk '{print $3}' | sed 's/%//')
                 
                 echo "    Temperatura: ${TEMP}°C"
                 echo "    Desgaste: ${WEAR}%"
                 
-                # Avaliação
                 if [ -n "$TEMP" ] && [ $TEMP -gt 65 ] 2>/dev/null; then
-                    echo -e "    ${RED}❌ TEMPERATURA ALTA (>65°C) - Melhore o resfriamento${NC}"
+                    echo -e "    ${RED}❌ TEMPERATURA ALTA (>65°C)${NC}"
                     PROBLEMS+=("Temperatura alta (${TEMP}°C) em /dev/$d")
+                    CHECK_RESULTS+=("🔴 TEMPERATURA: ${TEMP}°C (Alta)")
                 elif [ -n "$TEMP" ] && [ $TEMP -gt 50 ] 2>/dev/null; then
                     echo -e "    ${YELLOW}⚠️  TEMPERATURA QUENTE (50-65°C)${NC}"
                     WARNINGS+=("Temperatura ${TEMP}°C em /dev/$d")
+                    CHECK_RESULTS+=("🟡 TEMPERATURA: ${TEMP}°C (Quente)")
                 elif [ -n "$TEMP" ]; then
                     echo -e "    ${GREEN}✅ TEMPERATURA ADEQUADA (<50°C)${NC}"
+                    CHECK_RESULTS+=("✅ TEMPERATURA: ${TEMP}°C (Adequada)")
                 fi
                 
                 if [ -n "$WEAR" ] && [ $WEAR -gt 80 ] 2>/dev/null; then
-                    echo -e "    ${RED}❌ DESGASTE CRÍTICO (>80%) - Substitua o disco${NC}"
+                    echo -e "    ${RED}❌ DESGASTE CRÍTICO (>80%)${NC}"
                     PROBLEMS+=("Desgaste ${WEAR}% em /dev/$d")
+                    CHECK_RESULTS+=("🔴 DESGASTE: ${WEAR}% (Crítico)")
                 elif [ -n "$WEAR" ] && [ $WEAR -gt 60 ] 2>/dev/null; then
-                    echo -e "    ${YELLOW}⚠️  DESGASTE MODERADO (60-80%) - Monitore frequentemente${NC}"
+                    echo -e "    ${YELLOW}⚠️  DESGASTE MODERADO (60-80%)${NC}"
                     WARNINGS+=("Desgaste ${WEAR}% em /dev/$d")
+                    CHECK_RESULTS+=("🟡 DESGASTE: ${WEAR}% (Moderado)")
                 elif [ -n "$WEAR" ]; then
                     echo -e "    ${GREEN}✅ DESGASTE SAUDÁVEL (<60%)${NC}"
+                    CHECK_RESULTS+=("✅ DESGASTE: ${WEAR}% (Saudável)")
                 fi
                 
                 echo -e "    ${GREEN}✅ SMART: DADOS LIDOS COM SUCESSO (via nvme-cli)${NC}"
                 SMART_CHECKED=1
             else
                 echo -e "    ${YELLOW}⚠️  Não foi possível ler dados SMART do NVMe${NC}"
-                echo -e "${BLUE}💡 Execute com sudo ou verifique permissões: sudo nvme smart-log /dev/$d${NC}"
                 WARNINGS+=("Não foi possível ler SMART do NVMe /dev/$d")
             fi
             break
@@ -370,7 +400,6 @@ if [ "$IS_NVME" = true ] && command -v nvme &>/dev/null; then
     done
 elif [ "$IS_NVME" = true ] && ! command -v nvme &>/dev/null; then
     echo -e "  ${YELLOW}⚠️  nvme-cli não instalado - necessário para SMART em NVMe${NC}"
-    echo -e "${BLUE}💡 Instale com: sudo apt install nvme-cli${NC}"
     WARNINGS+=("nvme-cli não instalado - SMART NVMe indisponível")
 fi
 
@@ -388,9 +417,11 @@ if [ $SMART_CHECKED -eq 0 ] && command -v smartctl &>/dev/null; then
             
             if echo "$SMART_RESULT" | grep -qi "passed"; then
                 echo -e "    ${GREEN}✅ SMART: APROVADO${NC}"
+                CHECK_RESULTS+=("✅ SMART: Aprovado")
             else
-                echo -e "    ${RED}❌ SMART: FALHA - Faça backup imediatamente!${NC}"
+                echo -e "    ${RED}❌ SMART: FALHA${NC}"
                 PROBLEMS+=("SMART falhou em /dev/$d")
+                CHECK_RESULTS+=("🔴 SMART: Falha")
             fi
             SMART_CHECKED=1
             break
@@ -425,23 +456,29 @@ if command -v iostat &>/dev/null; then
         
         if command -v bc &>/dev/null; then
             if (( $(echo "$UTIL_CLEAN > 80" | bc -l) )); then
-                echo -e "  ${RED}❌ UTILIZAÇÃO MUITO ALTA (>80%) - Possível gargalo${NC}"
+                echo -e "  ${RED}❌ UTILIZAÇÃO MUITO ALTA (>80%)${NC}"
                 PROBLEMS+=("Utilização alta: ${UTIL_CLEAN}%")
+                CHECK_RESULTS+=("🔴 UTILIZAÇÃO: ${UTIL_CLEAN}% (Alta)")
             elif (( $(echo "$UTIL_CLEAN > 50" | bc -l) )); then
-                echo -e "  ${YELLOW}⚠️  UTILIZAÇÃO MODERADA (50-80%) - Monitore${NC}"
+                echo -e "  ${YELLOW}⚠️  UTILIZAÇÃO MODERADA (50-80%)${NC}"
                 WARNINGS+=("Utilização ${UTIL_CLEAN}%")
+                CHECK_RESULTS+=("🟡 UTILIZAÇÃO: ${UTIL_CLEAN}% (Moderada)")
             else
-                echo -e "  ${GREEN}✅ UTILIZAÇÃO BAIXA (<50%) - Bom desempenho${NC}"
+                echo -e "  ${GREEN}✅ UTILIZAÇÃO BAIXA (<50%)${NC}"
+                CHECK_RESULTS+=("✅ UTILIZAÇÃO: ${UTIL_CLEAN}% (Baixa)")
             fi
             
             if (( $(echo "$IOPS_READ_CLEAN >= $EXPECTED_IOPS" | bc -l) )); then
                 echo -e "  ${GREEN}✅ IOPS: Excelente ($IOPS_READ_CLEAN ≥ $EXPECTED_IOPS)${NC}"
+                CHECK_RESULTS+=("✅ IOPS: ${IOPS_READ_CLEAN} (Excelente)")
             elif (( $(echo "$IOPS_READ_CLEAN >= $EXPECTED_IOPS * 0.5" | bc -l) )); then
                 echo -e "  ${YELLOW}⚠️  IOPS: Aceitável (esperado $EXPECTED_IOPS)${NC}"
                 WARNINGS+=("IOPS ${IOPS_READ_CLEAN} abaixo do esperado (${EXPECTED_IOPS})")
+                CHECK_RESULTS+=("🟡 IOPS: ${IOPS_READ_CLEAN} (Aceitável)")
             else
                 echo -e "  ${YELLOW}ℹ️  IOPS: Baixo - Sistema ocioso?${NC}"
                 INFO+=("IOPS baixo ($IOPS_READ_CLEAN) - provavelmente sistema ocioso")
+                CHECK_RESULTS+=("ℹ️ IOPS: ${IOPS_READ_CLEAN} (Sistema ocioso)")
             fi
         else
             echo "  ⚠️ bc não instalado - comparação precisa não disponível"
@@ -470,7 +507,7 @@ else
 fi
 
 # 10. VERIFICAÇÃO DE SWAP
-echo -e "\n${BOLD}[10] VERIFICAÇÃO DE SWAP E MEMÓRIA${NC}"
+echo -e "\n${BOLD}[10] VERIFICAÇÃO DE SWAP E MEMÓRIA (free)${NC}"
 if command -v free &>/dev/null; then
     FREE_OUT=$(free -h)
     echo "  $FREE_OUT" | head -2
@@ -482,11 +519,14 @@ if command -v free &>/dev/null; then
         if [ $SWAP_PERCENT -gt 80 ]; then
             echo -e "  ${RED}❌ SWAP CRÍTICO: ${SWAP_PERCENT}% usado${NC}"
             PROBLEMS+=("Swap crítico (${SWAP_PERCENT}%) - memória RAM insuficiente")
+            CHECK_RESULTS+=("🔴 SWAP: ${SWAP_PERCENT}% (Crítico)")
         elif [ $SWAP_PERCENT -gt 50 ]; then
             echo -e "  ${YELLOW}⚠️  Swap moderado: ${SWAP_PERCENT}% usado${NC}"
             WARNINGS+=("Swap em ${SWAP_PERCENT}%")
+            CHECK_RESULTS+=("🟡 SWAP: ${SWAP_PERCENT}% (Moderado)")
         else
             echo -e "  ${GREEN}✅ Swap baixo: ${SWAP_PERCENT}% usado${NC}"
+            CHECK_RESULTS+=("✅ SWAP: ${SWAP_PERCENT}% (Baixo)")
         fi
     else
         echo "  ℹ️ Sem partição swap configurada"
@@ -495,7 +535,7 @@ if command -v free &>/dev/null; then
 fi
 
 # 11. DISK SCHEDULER
-echo -e "\n${BOLD}[11] AGENDADOR DE I/O${NC}"
+echo -e "\n${BOLD}[11] AGENDADOR DE I/O (scheduler)${NC}"
 for dev in sda nvme0n1; do
     if [ -e /sys/block/$dev/queue/scheduler ]; then
         SCHED=$(cat /sys/block/$dev/queue/scheduler 2>/dev/null | grep -o "\[.*\]" | sed 's/\[//;s/\]//')
@@ -503,67 +543,57 @@ for dev in sda nvme0n1; do
         
         if [[ "$SCHED" == *"none"* ]] || [[ "$SCHED" == *"noop"* ]]; then
             echo -e "  ${GREEN}✅ Adequado para SSD/NVMe${NC}"
+            CHECK_RESULTS+=("✅ SCHEDULER: $SCHED (Adequado)")
         elif [[ "$SCHED" == *"mq-deadline"* ]]; then
             echo -e "  ${GREEN}✅ Bom para uso geral${NC}"
+            CHECK_RESULTS+=("✅ SCHEDULER: $SCHED (Bom)")
         elif [[ "$SCHED" == *"cfq"* ]]; then
-            echo -e "  ${YELLOW}⚠️  Não recomendado para SSD - troque para 'none' ou 'mq-deadline'${NC}"
+            echo -e "  ${YELLOW}⚠️  Não recomendado para SSD${NC}"
             WARNINGS+=("Agendador CFQ em SSD - pode reduzir performance")
+            CHECK_RESULTS+=("🟡 SCHEDULER: $SCHED (Não recomendado para SSD)")
         fi
     fi
 done
 
 # ============================================================
-# RESUMO FINAL VISUAL E ORGANIZADO
+# QUADRO COMPARATIVO FINAL
 # ============================================================
 
 echo -e "\n${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}${BOLD}                   RESUMO DA ANÁLISE${NC}"
+echo -e "${BLUE}${BOLD}              QUADRO COMPARATIVO - IDEAL vs DIAGNOSTICADO${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-# Tabela de referência rápida
-echo -e "\n${BOLD}📊 REFERÊNCIA DE PERFORMANCE ESPERADA:${NC}"
-echo "  ┌──────────────┬─────────────┬─────────┬────────────┐"
-echo "  │ Tipo         │ Leitura     │ IOPS    │ Latência   │"
-echo "  ├──────────────┼─────────────┼─────────┼────────────┤"
-echo "  │ HDD 7.2K     │ 80-120 MB/s │ 150     │ 8-12ms     │"
-echo "  │ HDD 10K      │ 120-180 MB/s│ 200     │ 5-8ms      │"
-echo "  │ HDD 15K      │ 180-250 MB/s│ 300     │ 3-5ms      │"
-echo "  │ SATA SSD     │ 500-550 MB/s│ 50K     │ 0.1-1ms    │"
-echo "  │ NVMe         │ 2-7 GB/s    │ 500K    │ 0.02-0.1ms │"
-echo "  └──────────────┴─────────────┴─────────┴────────────┘"
+# Cabeçalho da tabela
+echo -e "\n${BOLD}┌──────────────┬─────────────────────┬─────────────────────┬──────────────┐${NC}"
+echo -e "${BOLD}│  COMPONENTE  │      ESPERADO       │    DIAGNOSTICADO    │   STATUS     │${NC}"
+echo -e "${BOLD}├──────────────┼─────────────────────┼─────────────────────┼──────────────┤${NC}"
 
-# Exibe problemas encontrados
-if [ ${#PROBLEMS[@]} -gt 0 ]; then
-    echo -e "\n${RED}${BOLD}❌ PROBLEMAS CRÍTICOS ENCONTRADOS:${NC}"
-    for problem in "${PROBLEMS[@]}"; do
-        echo -e "  ${RED}• $problem${NC}"
-    done
+# Linha: Tipo de Disco
+DISPLAY_TYPE=$(echo "$DISK_TYPE" | xargs)
+EXPECTED_TYPE=$(echo "$DISK_TYPE" | xargs)
+if [ -n "$DISPLAY_TYPE" ]; then
+    echo "│ Disco        │ $EXPECTED_TYPE         │ $DISPLAY_TYPE         │ ${GREEN}✅ OK${NC}        │"
+fi
+
+# Linha: Espaço em disco (pega o resultado mais crítico)
+SPACE_CRITICAL=false
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"ESPAÇO"* && "$result" == *"CRÍTICO"* ]]; then
+        SPACE_CRITICAL=true
+        break
+    fi
+done
+
+if [ "$SPACE_CRITICAL" = true ]; then
+    SPACE_STATUS="${RED}🔴 CRÍTICO${NC}"
+elif [ ${#WARNINGS[@]} -gt 0 ] && [[ "${WARNINGS[*]}" == *"Uso de disco"* ]]; then
+    SPACE_STATUS="${YELLOW}🟡 ATENÇÃO${NC}"
 else
-    echo -e "\n${GREEN}${BOLD}✅ NENHUM PROBLEMA CRÍTICO ENCONTRADO${NC}"
+    SPACE_STATUS="${GREEN}✅ OK${NC}"
 fi
 
-# Exibe avisos
-if [ ${#WARNINGS[@]} -gt 0 ]; then
-    echo -e "\n${YELLOW}${BOLD}⚠️  AVISOS:${NC}"
-    for warning in "${WARNINGS[@]}"; do
-        echo -e "  ${YELLOW}• $warning${NC}"
-    done
-fi
-
-# Exibe informações
-if [ ${#INFO[@]} -gt 0 ]; then
-    echo -e "\n${BLUE}${BOLD}ℹ️  INFORMAÇÕES ADICIONAIS:${NC}"
-    for info in "${INFO[@]}"; do
-        echo -e "  ${BLUE}• $info${NC}"
-    done
-fi
-
-echo -e "\n${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-echo -e "${GREEN}✅ TODOS OS TESTES EXECUTADOS EM MODO SOMENTE LEITURA${NC}"
-echo -e "${GREEN}✅ NENHUMA ALTERAÇÃO FOI FEITA NO SISTEMA${NC}"
-echo -e "${GREEN}✅ SEGURO PARA AMBIENTES DE PRODUÇÃO${NC}"
-echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
-
-echo -e "\n${BLUE}📝 Para mais detalhes, consulte:${NC}"
-echo "  • https://github.com/tiagojulianoferreira/storage-check"
-echo ""
+# Linha: Latência
+LATENCY_STATUS=""
+for result in "${CHECK_RESULTS[@]}"; do
+    if [[ "$result" == *"LATÊNCIA"* ]]; then
+        LATENCY_STATUS=$(echo "$result" | awk -F': ' '{print $2
