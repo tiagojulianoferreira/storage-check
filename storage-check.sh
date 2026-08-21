@@ -2,7 +2,7 @@
 # Storage Check - Diagnóstico READ-ONLY para Linux
 # Autor: Tiago Ferreira
 # Repositório: https://github.com/tiagojulianoferreira/storage-check
-# Versão: 2.5 - Alinhamento de tabela corrigido
+# Versão: 2.6 - Tabela com alinhamento perfeito
 
 # Cores para output
 RED='\033[0;31m'
@@ -282,7 +282,7 @@ if command -v ioping &>/dev/null; then
         LATENCY_CLEAN=$(echo $LATENCY_RAW | sed 's/,/./')
         echo "  ⏱️  Latência média: ${LATENCY_CLEAN}ms"
         
-        # Comparação segura SEM bc - usando apenas inteiros
+        # Comparação segura SEM bc
         LATENCY_INT=$(echo "$LATENCY_CLEAN" | cut -d'.' -f1 2>/dev/null)
         EXPECTED_INT=$(echo "$EXPECTED_LATENCY" | cut -d'.' -f1 2>/dev/null)
         
@@ -577,91 +577,12 @@ for dev in sda nvme0n1; do
 done
 
 # ============================================================
-# QUADRO COMPARATIVO FINAL (VERSÃO COM ALINHAMENTO CORRIGIDO)
+# QUADRO COMPARATIVO FINAL (VERSÃO HIBRIDA - SIMPLES E ALINHADA)
 # ============================================================
 
 echo -e "\n${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}${BOLD}              QUADRO COMPARATIVO - IDEAL vs DIAGNOSTICADO${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
-
-# Função para obter ícone de status (simplificada)
-get_icon_simple() {
-    local value="$1"
-    local expected="$2"
-    local type="$3"
-    
-    if [ -z "$value" ] || [ "$value" = "N/A" ] || [ "$value" = "" ]; then
-        echo "ℹ️"
-        return
-    fi
-    
-    case "$type" in
-        "space")
-            if [ "$value" -gt 90 ] 2>/dev/null; then
-                echo "🔴"
-            elif [ "$value" -gt 80 ] 2>/dev/null; then
-                echo "🟡"
-            else
-                echo "✅"
-            fi
-            ;;
-        "latency")
-            value_int=$(echo "$value" | cut -d'.' -f1 2>/dev/null)
-            expected_int=$(echo "$expected" | cut -d'.' -f1 2>/dev/null)
-            if [ -z "$value_int" ]; then
-                value_int=0
-            fi
-            if [ -z "$expected_int" ]; then
-                expected_int=1
-            fi
-            if [ $value_int -lt $expected_int ] 2>/dev/null; then
-                echo "✅"
-            elif [ $value_int -lt $((expected_int * 2)) ] 2>/dev/null; then
-                echo "🟡"
-            else
-                echo "🔴"
-            fi
-            ;;
-        "wear"|"temp"|"swap")
-            if [ -z "$value" ]; then
-                echo "ℹ️"
-            elif [ "$value" -gt 80 ] 2>/dev/null; then
-                echo "🔴"
-            elif [ "$value" -gt 50 ] 2>/dev/null; then
-                echo "🟡"
-            else
-                echo "✅"
-            fi
-            ;;
-        "util")
-            if [ -z "$value" ]; then
-                echo "ℹ️"
-            elif (( $(echo "$value > 80" | bc -l 2>/dev/null) )); then
-                echo "🔴"
-            elif (( $(echo "$value > 50" | bc -l 2>/dev/null) )); then
-                echo "🟡"
-            else
-                echo "✅"
-            fi
-            ;;
-        "iops")
-            value_int=$(echo "$value" | cut -d'.' -f1 2>/dev/null)
-            if [ -z "$value_int" ]; then
-                value_int=0
-            fi
-            if [ $value_int -ge $expected ] 2>/dev/null; then
-                echo "✅"
-            elif [ $value_int -ge $((expected * 50 / 100)) ] 2>/dev/null; then
-                echo "🟡"
-            else
-                echo "ℹ️"
-            fi
-            ;;
-        *)
-            echo "ℹ️"
-            ;;
-    esac
-}
 
 # Extrai o valor do espaço
 SPACE_VALUE=""
@@ -672,100 +593,135 @@ for result in "${CHECK_RESULTS[@]}"; do
     fi
 done
 
-# Ajusta para "N/A" se vazio
 if [ -z "$SPACE_VALUE" ]; then
     SPACE_VALUE="N/A"
 fi
 
-echo ""
-echo "  +---------------------------+---------------------------+---------------------------+"
-echo "  | COMPONENTE                | ESPERADO                  | DIAGNOSTICADO             |"
-echo "  +---------------------------+---------------------------+---------------------------+"
-
-# Função para imprimir linha formatada
-print_table_row() {
-    local component="$1"
-    local expected="$2"
-    local diagnostic="$3"
+# Função para obter ícone
+get_icon() {
+    local value="$1"
+    local type="$2"
     
-    # Garante tamanhos fixos
-    printf "  | %-25s | %-25s | %-25s |\n" "$component" "$expected" "$diagnostic"
+    if [ -z "$value" ] || [ "$value" = "N/A" ]; then
+        echo "ℹ️"
+        return
+    fi
+    
+    case "$type" in
+        "space")
+            if [ "$value" -gt 90 ] 2>/dev/null; then echo "🔴"
+            elif [ "$value" -gt 80 ] 2>/dev/null; then echo "🟡"
+            else echo "✅"; fi
+            ;;
+        "latency")
+            value_int=$(echo "$value" | cut -d'.' -f1 2>/dev/null)
+            if [ -z "$value_int" ]; then value_int=0; fi
+            if [ $value_int -lt 1 ] 2>/dev/null; then echo "✅"
+            elif [ $value_int -lt 3 ] 2>/dev/null; then echo "🟡"
+            else echo "🔴"; fi
+            ;;
+        "wear"|"temp"|"swap")
+            if [ "$value" -gt 80 ] 2>/dev/null; then echo "🔴"
+            elif [ "$value" -gt 50 ] 2>/dev/null; then echo "🟡"
+            else echo "✅"; fi
+            ;;
+        "util")
+            if (( $(echo "$value > 80" | bc -l 2>/dev/null) )); then echo "🔴"
+            elif (( $(echo "$value > 50" | bc -l 2>/dev/null) )); then echo "🟡"
+            else echo "✅"; fi
+            ;;
+        *)
+            echo "✅"
+            ;;
+    esac
 }
 
-# Linha 1: Disco
-print_table_row "Disco" "$DISK_TYPE" "$DISK_TYPE"
+# Mostra a tabela de forma simples e alinhada
+echo ""
+echo "  +---------------------+----------------------+----------------------+"
+echo "  | COMPONENTE          | ESPERADO             | DIAGNOSTICADO        |"
+echo "  +---------------------+----------------------+----------------------+"
 
-# Linha 2: Espaço
+# Função para imprimir linha alinhada
+print_row() {
+    local comp="$1"
+    local expected="$2"
+    local diag="$3"
+    printf "  | %-19s | %-20s | %-20s |\n" "$comp" "$expected" "$diag"
+}
+
+print_row "Disco" "$DISK_TYPE" "$DISK_TYPE"
+
 if [ "$SPACE_VALUE" != "N/A" ]; then
-    ICON=$(get_icon_simple "$SPACE_VALUE" "" "space")
-    print_table_row "Espaço em /" "< 90%" "$ICON ${SPACE_VALUE}%"
+    ICON=$(get_icon "$SPACE_VALUE" "space")
+    print_row "Espaço em /" "< 90%" "$ICON ${SPACE_VALUE}%"
 else
-    print_table_row "Espaço em /" "< 90%" "ℹ️ N/A"
+    print_row "Espaço em /" "< 90%" "ℹ️ N/A"
 fi
 
-# Linha 3: Latência
 if [ -n "$LATENCY_CLEAN" ]; then
-    ICON=$(get_icon_simple "$LATENCY_CLEAN" "$EXPECTED_LATENCY" "latency")
-    print_table_row "Latência" "< ${EXPECTED_LATENCY}ms" "$ICON ${LATENCY_CLEAN}ms"
+    ICON=$(get_icon "$LATENCY_CLEAN" "latency")
+    print_row "Latência" "< ${EXPECTED_LATENCY}ms" "$ICON ${LATENCY_CLEAN}ms"
 else
-    print_table_row "Latência" "< ${EXPECTED_LATENCY}ms" "ℹ️ N/A"
+    print_row "Latência" "< ${EXPECTED_LATENCY}ms" "ℹ️ N/A"
 fi
 
-# Linha 4: Velocidade
 if [ -n "$SPEED_RESULT" ]; then
-    print_table_row "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "✅ ${SPEED_RESULT}MB/s"
+    print_row "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "✅ ${SPEED_RESULT}MB/s"
 else
-    print_table_row "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "ℹ️ N/A"
+    print_row "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "ℹ️ N/A"
 fi
 
-# Linha 5: Temperatura
 if [ -n "$TEMP_RESULT" ]; then
-    ICON=$(get_icon_simple "$TEMP_RESULT" "" "temp")
-    print_table_row "Temperatura" "< 50°C" "$ICON ${TEMP_RESULT}°C"
+    ICON=$(get_icon "$TEMP_RESULT" "temp")
+    print_row "Temperatura" "< 50°C" "$ICON ${TEMP_RESULT}°C"
 else
-    print_table_row "Temperatura" "< 50°C" "ℹ️ N/A"
+    print_row "Temperatura" "< 50°C" "ℹ️ N/A"
 fi
 
-# Linha 6: Desgaste
 if [ -n "$WEAR_RESULT" ]; then
-    ICON=$(get_icon_simple "$WEAR_RESULT" "" "wear")
-    print_table_row "Desgaste" "< 60%" "$ICON ${WEAR_RESULT}%"
+    ICON=$(get_icon "$WEAR_RESULT" "wear")
+    print_row "Desgaste" "< 60%" "$ICON ${WEAR_RESULT}%"
 else
-    print_table_row "Desgaste" "< 60%" "ℹ️ N/A"
+    print_row "Desgaste" "< 60%" "ℹ️ N/A"
 fi
 
-# Linha 7: Utilização
 if [ -n "$UTIL_RESULT" ]; then
-    ICON=$(get_icon_simple "$UTIL_RESULT" "" "util")
-    print_table_row "Utilização" "< 50%" "$ICON ${UTIL_RESULT}%"
+    ICON=$(get_icon "$UTIL_RESULT" "util")
+    print_row "Utilização" "< 50%" "$ICON ${UTIL_RESULT}%"
 else
-    print_table_row "Utilização" "< 50%" "ℹ️ N/A"
+    print_row "Utilização" "< 50%" "ℹ️ N/A"
 fi
 
-# Linha 8: IOPS
 if [ -n "$IOPS_RESULT" ]; then
-    ICON=$(get_icon_simple "$IOPS_RESULT" "$EXPECTED_IOPS" "iops")
-    print_table_row "IOPS" "≥ ${EXPECTED_IOPS}" "$ICON ${IOPS_RESULT}"
+    IOPS_INT=$(echo "$IOPS_RESULT" | cut -d'.' -f1 2>/dev/null)
+    if [ -z "$IOPS_INT" ]; then IOPS_INT=0; fi
+    if [ $IOPS_INT -ge $EXPECTED_IOPS ] 2>/dev/null; then
+        ICON="✅"
+    elif [ $IOPS_INT -ge $((EXPECTED_IOPS * 50 / 100)) ] 2>/dev/null; then
+        ICON="🟡"
+    else
+        ICON="ℹ️"
+    fi
+    print_row "IOPS" "≥ ${EXPECTED_IOPS}" "$ICON ${IOPS_RESULT}"
 else
-    print_table_row "IOPS" "≥ ${EXPECTED_IOPS}" "ℹ️ N/A"
+    print_row "IOPS" "≥ ${EXPECTED_IOPS}" "ℹ️ N/A"
 fi
 
-# Linha 9: Swap
 if [ -n "$SWAP_RESULT" ]; then
-    ICON=$(get_icon_simple "$SWAP_RESULT" "" "swap")
-    print_table_row "Swap" "< 50%" "$ICON ${SWAP_RESULT}%"
+    ICON=$(get_icon "$SWAP_RESULT" "swap")
+    print_row "Swap" "< 50%" "$ICON ${SWAP_RESULT}%"
 else
-    print_table_row "Swap" "< 50%" "ℹ️ N/A"
+    print_row "Swap" "< 50%" "ℹ️ N/A"
 fi
 
-# Linha 10: Scheduler
 if [ -n "$SCHED_RESULT" ]; then
-    print_table_row "Agendador" "none/noop/deadline" "✅ ${SCHED_RESULT}"
+    print_row "Agendador" "none/noop/deadline" "✅ ${SCHED_RESULT}"
 else
-    print_table_row "Agendador" "none/noop/deadline" "ℹ️ N/A"
+    print_row "Agendador" "none/noop/deadline" "ℹ️ N/A"
 fi
 
-echo "  +---------------------------+---------------------------+---------------------------+"
+echo "  +---------------------+----------------------+----------------------+"
 
 # ============================================================
 # LEGENDA E RESUMO DOS PROBLEMAS
