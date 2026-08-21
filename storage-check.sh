@@ -2,7 +2,7 @@
 # Storage Check - Diagnóstico READ-ONLY para Linux
 # Autor: Tiago Ferreira
 # Repositório: https://github.com/tiagojulianoferreira/storage-check
-# Versão: 2.3 - Quadro comparativo com sintaxe corrigida
+# Versão: 2.4 - Quadro comparativo com sintaxe simplificada
 
 # Cores para output
 RED='\033[0;31m'
@@ -275,6 +275,7 @@ fi
 
 # 5. TESTE DE LATÊNCIA (ioping) - CORRIGIDO
 echo -e "\n${BOLD}[5] TESTE DE LATÊNCIA (ioping)${NC}"
+LATENCY_CLEAN=""
 if command -v ioping &>/dev/null; then
     LATENCY_RAW=$(ioping -c 5 -q . 2>/dev/null | grep "avg" | awk "{print \$3}" | sed "s/ms//")
     if [ -n "$LATENCY_RAW" ]; then
@@ -312,10 +313,12 @@ fi
 
 # 6. TESTE DE VELOCIDADE (dd) - AJUSTADO
 echo -e "\n${BOLD}[6] TESTE DE VELOCIDADE DE LEITURA (dd)${NC}"
+SPEED_RESULT=""
 if [ -n "$DISK_FOUND" ] && [ -e "$DISK_FOUND" ]; then
     echo "  Testando $DISK_FOUND (pode levar alguns segundos)..."
     DD_RESULT=$(dd if=$DISK_FOUND of=/dev/null bs=1M count=500 iflag=direct 2>&1 | grep "MB/s" | awk "{print \$NF}")
     if [ -n "$DD_RESULT" ]; then
+        SPEED_RESULT="$DD_RESULT"
         echo "  📊 Velocidade: ${DD_RESULT}MB/s"
         DD_RATE=$(echo $DD_RESULT | cut -d"." -f1 2>/dev/null)
         if [ -n "$DD_RATE" ] && [ $DD_RATE -ge $EXPECTED_READ_MB ] 2>/dev/null; then
@@ -342,6 +345,8 @@ fi
 # 7. SAUDE SMART
 echo -e "\n${BOLD}[7] SAÚDE DO DISCO (SMART)${NC}"
 SMART_CHECKED=0
+TEMP_RESULT=""
+WEAR_RESULT=""
 
 if [ "$IS_NVME" = true ] && command -v nvme &>/dev/null; then
     echo "  📌 Usando nvme-cli para leitura SMART do NVMe:"
@@ -352,6 +357,8 @@ if [ "$IS_NVME" = true ] && command -v nvme &>/dev/null; then
             if [ -n "$SMART_LOG" ]; then
                 TEMP=$(echo "$SMART_LOG" | grep "temperature" | awk '{print $3}' | sed 's/+//' | sed 's/C//')
                 WEAR=$(echo "$SMART_LOG" | grep "percentage_used" | awk '{print $3}' | sed 's/%//')
+                TEMP_RESULT="$TEMP"
+                WEAR_RESULT="$WEAR"
                 
                 echo "    Temperatura: ${TEMP}°C"
                 echo "    Desgaste: ${WEAR}%"
@@ -402,6 +409,7 @@ if [ $SMART_CHECKED -eq 0 ] && command -v smartctl &>/dev/null; then
         if [ -e /dev/$d ]; then
             SMART_RESULT=$(smartctl -H /dev/$d 2>/dev/null | grep -i "test result" | awk -F: "{print \$2}" | xargs)
             TEMP=$(smartctl -A /dev/$d 2>/dev/null | grep "Temperature_Celsius" | awk "{print \$10}")
+            TEMP_RESULT="$TEMP"
             
             echo "  /dev/$d:"
             echo "    Status: $SMART_RESULT"
@@ -428,6 +436,8 @@ fi
 
 # 8. IOSTAT
 echo -e "\n${BOLD}[8] ESTATÍSTICAS DE I/O (iostat)${NC}"
+IOPS_RESULT=""
+UTIL_RESULT=""
 if command -v iostat &>/dev/null; then
     IOSTAT_OUT=$(iostat -x 1 2 2>/dev/null | grep -E "^sd|^nvme" | tail -1)
     
@@ -441,6 +451,8 @@ if command -v iostat &>/dev/null; then
         IOPS_WRITE_CLEAN=$(echo $IOPS_WRITE | sed 's/,/./')
         UTIL_CLEAN=$(echo $UTIL | sed 's/,/./')
         AWAIT_CLEAN=$(echo $AWAIT | sed 's/,/./')
+        IOPS_RESULT="$IOPS_READ_CLEAN"
+        UTIL_RESULT="$UTIL_CLEAN"
         
         echo "  📊 Resumo da última amostra:"
         echo "     Leituras/s: ${IOPS_READ_CLEAN} | Escritas/s: ${IOPS_WRITE_CLEAN}"
@@ -500,6 +512,7 @@ fi
 
 # 10. VERIFICAÇÃO DE SWAP
 echo -e "\n${BOLD}[10] VERIFICAÇÃO DE SWAP E MEMÓRIA (free)${NC}"
+SWAP_RESULT=""
 if command -v free &>/dev/null; then
     FREE_OUT=$(free -h)
     echo "  $FREE_OUT" | head -2
@@ -508,6 +521,7 @@ if command -v free &>/dev/null; then
     
     if [ -n "$SWAP_TOTAL" ] && [ "$SWAP_TOTAL" -gt 0 ]; then
         SWAP_PERCENT=$((SWAP_USED * 100 / SWAP_TOTAL))
+        SWAP_RESULT="$SWAP_PERCENT"
         if [ $SWAP_PERCENT -gt 80 ]; then
             echo -e "  ${RED}❌ SWAP CRÍTICO: ${SWAP_PERCENT}% usado${NC}"
             PROBLEMS+=("Swap crítico (${SWAP_PERCENT}%) - memória RAM insuficiente")
@@ -528,9 +542,11 @@ fi
 
 # 11. DISK SCHEDULER
 echo -e "\n${BOLD}[11] AGENDADOR DE I/O (scheduler)${NC}"
+SCHED_RESULT=""
 for dev in sda nvme0n1; do
     if [ -e /sys/block/$dev/queue/scheduler ]; then
         SCHED=$(cat /sys/block/$dev/queue/scheduler 2>/dev/null | grep -o "\[.*\]" | sed 's/\[//;s/\]//')
+        SCHED_RESULT="$SCHED"
         echo "  /dev/$dev: $SCHED"
         
         if [[ "$SCHED" == *"none"* ]] || [[ "$SCHED" == *"noop"* ]]; then
@@ -548,230 +564,227 @@ for dev in sda nvme0n1; do
 done
 
 # ============================================================
-# QUADRO COMPARATIVO FINAL (SINTAXE CORRIGIDA)
+# QUADRO COMPARATIVO FINAL (VERSÃO SIMPLIFICADA)
 # ============================================================
 
 echo -e "\n${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}${BOLD}              QUADRO COMPARATIVO - IDEAL vs DIAGNOSTICADO${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-# Função para obter status com cor
-get_status() {
-    local result="$1"
-    if [[ "$result" == *"🔴"* ]]; then
-        echo "${RED}🔴 RUIM${NC}"
-    elif [[ "$result" == *"🟡"* ]]; then
-        echo "${YELLOW}🟡 ATENÇÃO${NC}"
-    elif [[ "$result" == *"✅"* ]]; then
-        echo "${GREEN}✅ OK${NC}"
-    else
-        echo "${BLUE}ℹ️ INFO${NC}"
-    fi
-}
-
-# Função para extrair valor diagnosticado
-get_diag_value() {
-    local result="$1"
-    echo "$result" | sed 's/^[^:]*: //' | sed 's/ (.*)//'
-}
-
-# Função para extrair status
-get_status_icon() {
-    local result="$1"
-    if [[ "$result" == *"🔴"* ]]; then
-        echo "🔴"
-    elif [[ "$result" == *"🟡"* ]]; then
-        echo "🟡"
-    elif [[ "$result" == *"✅"* ]]; then
-        echo "✅"
-    else
+# Função para obter ícone de status
+get_icon() {
+    local value="$1"
+    local expected="$2"
+    local type="$3"
+    
+    if [ -z "$value" ] || [ "$value" = "N/A" ]; then
         echo "ℹ️"
+        return
     fi
+    
+    case "$type" in
+        "space")
+            if [ "$value" -gt 90 ] 2>/dev/null; then
+                echo "🔴"
+            elif [ "$value" -gt 80 ] 2>/dev/null; then
+                echo "🟡"
+            else
+                echo "✅"
+            fi
+            ;;
+        "latency")
+            if command -v bc &>/dev/null; then
+                if (( $(echo "$value < $expected" | bc -l 2>/dev/null || echo 0) )); then
+                    echo "✅"
+                elif (( $(echo "$value < $expected * 2" | bc -l 2>/dev/null || echo 0) )); then
+                    echo "🟡"
+                else
+                    echo "🔴"
+                fi
+            else
+                echo "ℹ️"
+            fi
+            ;;
+        "wear")
+            if [ -z "$value" ]; then
+                echo "ℹ️"
+            elif [ "$value" -gt 80 ] 2>/dev/null; then
+                echo "🔴"
+            elif [ "$value" -gt 60 ] 2>/dev/null; then
+                echo "🟡"
+            else
+                echo "✅"
+            fi
+            ;;
+        "temp")
+            if [ -z "$value" ]; then
+                echo "ℹ️"
+            elif [ "$value" -gt 65 ] 2>/dev/null; then
+                echo "🔴"
+            elif [ "$value" -gt 50 ] 2>/dev/null; then
+                echo "🟡"
+            else
+                echo "✅"
+            fi
+            ;;
+        "util")
+            if [ -z "$value" ]; then
+                echo "ℹ️"
+            elif (( $(echo "$value > 80" | bc -l 2>/dev/null || echo 0) )); then
+                echo "🔴"
+            elif (( $(echo "$value > 50" | bc -l 2>/dev/null || echo 0) )); then
+                echo "🟡"
+            else
+                echo "✅"
+            fi
+            ;;
+        "swap")
+            if [ -z "$value" ]; then
+                echo "ℹ️"
+            elif [ "$value" -gt 80 ] 2>/dev/null; then
+                echo "🔴"
+            elif [ "$value" -gt 50 ] 2>/dev/null; then
+                echo "🟡"
+            else
+                echo "✅"
+            fi
+            ;;
+        *)
+            echo "ℹ️"
+            ;;
+    esac
 }
 
-echo ""
-echo "┌──────────────────────┬──────────────────────────┬────────────────────────────────────┐"
-echo "│ COMPONENTE           │ ESPERADO                 │ DIAGNOSTICADO                      │"
-echo "├──────────────────────┼──────────────────────────┼────────────────────────────────────┤"
-
-# Linha 1: Tipo de Disco
-DISPLAY_TYPE=$(echo "$DISK_TYPE" | xargs)
-EXPECTED_TYPE=$(echo "$DISK_TYPE" | xargs)
-if [ -n "$DISPLAY_TYPE" ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Disco" "$EXPECTED_TYPE" "✅ $DISPLAY_TYPE"
-fi
-
-# Linha 2: Espaço (pega o mais crítico)
-SPACE_FOUND=false
+# Verifica espaço
+SPACE_VALUE=""
 for result in "${CHECK_RESULTS[@]}"; do
     if [[ "$result" == *"ESPAÇO"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "Espaço em /" "< 90% usado" "$ICON $DIAG"
-        SPACE_FOUND=true
+        SPACE_VALUE=$(echo "$result" | grep -o "[0-9]*" | head -1)
         break
     fi
 done
-if [ "$SPACE_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Espaço em /" "< 90% usado" "✅ < 90%"
+
+# Extrai o valor de utilização para o quadro
+UTIL_NUM=""
+if [ -n "$UTIL_RESULT" ]; then
+    UTIL_NUM=$(echo "$UTIL_RESULT" | sed 's/,/./')
+fi
+
+echo ""
+echo "  ┌─────────────────────────┬──────────────────────┬──────────────────────┐"
+echo "  │ COMPONENTE              │ ESPERADO             │ DIAGNOSTICADO        │"
+echo "  ├─────────────────────────┼──────────────────────┼──────────────────────┤"
+
+# Linha 1: Disco
+printf "  │ %-23s │ %-20s │ %-20s │\n" "Disco" "$DISK_TYPE" "$DISK_TYPE"
+
+# Linha 2: Espaço
+if [ -n "$SPACE_VALUE" ]; then
+    ICON=$(get_icon "$SPACE_VALUE" "" "space")
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Espaço em /" "< 90%" "$ICON" "${SPACE_VALUE}%"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "Espaço em /" "< 90%" "✅ < 90%"
 fi
 
 # Linha 3: Latência
-LATENCY_FOUND=false
-for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"LATÊNCIA"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "Latência" "< ${EXPECTED_LATENCY}ms" "$ICON $DIAG"
-        LATENCY_FOUND=true
-        break
-    fi
-done
-if [ "$LATENCY_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Latência" "< ${EXPECTED_LATENCY}ms" "✅ ${LATENCY_CLEAN:-N/A}ms"
+if [ -n "$LATENCY_CLEAN" ]; then
+    ICON=$(get_icon "$LATENCY_CLEAN" "$EXPECTED_LATENCY" "latency")
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Latência" "< ${EXPECTED_LATENCY}ms" "$ICON" "${LATENCY_CLEAN}ms"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "Latência" "< ${EXPECTED_LATENCY}ms" "ℹ️ N/A"
 fi
 
 # Linha 4: Velocidade
-SPEED_FOUND=false
-for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"VELOCIDADE"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "$ICON $DIAG"
-        SPEED_FOUND=true
-        break
-    fi
-done
-if [ "$SPEED_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "ℹ️ Não testado"
+if [ -n "$SPEED_RESULT" ]; then
+    ICON=$(get_icon "$SPEED_RESULT" "$EXPECTED_READ_MB" "speed")
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "✅" "${SPEED_RESULT}MB/s"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "ℹ️ N/A"
 fi
 
 # Linha 5: Temperatura
-TEMP_FOUND=false
-for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"TEMPERATURA"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "Temperatura" "< 50°C" "$ICON $DIAG"
-        TEMP_FOUND=true
-        break
-    fi
-done
-if [ "$TEMP_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Temperatura" "< 50°C" "ℹ️ N/A"
+if [ -n "$TEMP_RESULT" ]; then
+    ICON=$(get_icon "$TEMP_RESULT" "" "temp")
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Temperatura" "< 50°C" "$ICON" "${TEMP_RESULT}°C"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "Temperatura" "< 50°C" "ℹ️ N/A"
 fi
 
-# Linha 6: Desgaste (Wear)
-WEAR_FOUND=false
-for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"DESGASTE"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "Desgaste" "< 60%" "$ICON $DIAG"
-        WEAR_FOUND=true
-        break
-    fi
-done
-if [ "$WEAR_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Desgaste" "< 60%" "ℹ️ N/A"
+# Linha 6: Desgaste
+if [ -n "$WEAR_RESULT" ]; then
+    ICON=$(get_icon "$WEAR_RESULT" "" "wear")
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Desgaste" "< 60%" "$ICON" "${WEAR_RESULT}%"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "Desgaste" "< 60%" "ℹ️ N/A"
 fi
 
 # Linha 7: Utilização
-UTIL_FOUND=false
-for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"UTILIZAÇÃO"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "Utilização" "< 50%" "$ICON $DIAG"
-        UTIL_FOUND=true
-        break
-    fi
-done
-if [ "$UTIL_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Utilização" "< 50%" "ℹ️ N/A"
+if [ -n "$UTIL_NUM" ]; then
+    ICON=$(get_icon "$UTIL_NUM" "" "util")
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Utilização" "< 50%" "$ICON" "${UTIL_NUM}%"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "Utilização" "< 50%" "ℹ️ N/A"
 fi
 
 # Linha 8: IOPS
-IOPS_FOUND=false
-for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"IOPS"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "IOPS" "≥ ${EXPECTED_IOPS}" "$ICON $DIAG"
-        IOPS_FOUND=true
-        break
-    fi
-done
-if [ "$IOPS_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "IOPS" "≥ ${EXPECTED_IOPS}" "ℹ️ N/A"
+if [ -n "$IOPS_RESULT" ]; then
+    ICON=$(get_icon "$IOPS_RESULT" "$EXPECTED_IOPS" "iops")
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "IOPS" "≥ ${EXPECTED_IOPS}" "✅" "${IOPS_RESULT}"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "IOPS" "≥ ${EXPECTED_IOPS}" "ℹ️ N/A"
 fi
 
 # Linha 9: Swap
-SWAP_FOUND=false
-for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"SWAP"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "Swap" "< 50%" "$ICON $DIAG"
-        SWAP_FOUND=true
-        break
-    fi
-done
-if [ "$SWAP_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Swap" "< 50%" "ℹ️ N/A"
+if [ -n "$SWAP_RESULT" ]; then
+    ICON=$(get_icon "$SWAP_RESULT" "" "swap")
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Swap" "< 50%" "$ICON" "${SWAP_RESULT}%"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "Swap" "< 50%" "ℹ️ N/A"
 fi
 
 # Linha 10: Scheduler
-SCHED_FOUND=false
-for result in "${CHECK_RESULTS[@]}"; do
-    if [[ "$result" == *"SCHEDULER"* ]]; then
-        DIAG=$(get_diag_value "$result")
-        ICON=$(get_status_icon "$result")
-        printf "│ %-20s │ %-24s │ %-34s │\n" "Agendador" "none/noop/mq-deadline" "$ICON $DIAG"
-        SCHED_FOUND=true
-        break
-    fi
-done
-if [ "$SCHED_FOUND" = false ]; then
-    printf "│ %-20s │ %-24s │ %-34s │\n" "Agendador" "none/noop/mq-deadline" "ℹ️ N/A"
+if [ -n "$SCHED_RESULT" ]; then
+    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Agendador" "none/noop/deadline" "✅" "$SCHED_RESULT"
+else
+    printf "  │ %-23s │ %-20s │ %-20s │\n" "Agendador" "none/noop/deadline" "ℹ️ N/A"
 fi
 
-echo "└──────────────────────┴──────────────────────────┴────────────────────────────────────┘"
+echo "  └─────────────────────────┴──────────────────────┴──────────────────────┘"
 
 # ============================================================
 # LEGENDA E RESUMO DOS PROBLEMAS
 # ============================================================
 
 echo ""
-echo "📌 LEGENDA:"
-echo -e "  ${GREEN}✅ OK${NC}  - Dentro do esperado"
-echo -e "  ${YELLOW}🟡 ATENÇÃO${NC} - Requer monitoramento"
-echo -e "  ${RED}🔴 RUIM${NC}  - Requer ação imediata"
-echo -e "  ${BLUE}ℹ️ INFO${NC}  - Informação adicional"
+echo "  📌 LEGENDA:"
+echo -e "    ${GREEN}✅${NC}  - OK (dentro do esperado)"
+echo -e "    ${YELLOW}🟡${NC}  - ATENÇÃO (requer monitoramento)"
+echo -e "    ${RED}🔴${NC}  - RUIM (requer ação imediata)"
+echo -e "    ${BLUE}ℹ️${NC}  - INFO (informação adicional)"
 
 # Exibe problemas encontrados
 if [ ${#PROBLEMS[@]} -gt 0 ]; then
-    echo -e "\n${RED}${BOLD}❌ PROBLEMAS CRÍTICOS ENCONTRADOS:${NC}"
+    echo -e "\n  ${RED}${BOLD}❌ PROBLEMAS CRÍTICOS ENCONTRADOS:${NC}"
     for problem in "${PROBLEMS[@]}"; do
-        echo -e "  ${RED}• $problem${NC}"
+        echo -e "    ${RED}• $problem${NC}"
     done
 else
-    echo -e "\n${GREEN}${BOLD}✅ NENHUM PROBLEMA CRÍTICO ENCONTRADO${NC}"
+    echo -e "\n  ${GREEN}${BOLD}✅ NENHUM PROBLEMA CRÍTICO ENCONTRADO${NC}"
 fi
 
 # Exibe avisos
 if [ ${#WARNINGS[@]} -gt 0 ]; then
-    echo -e "\n${YELLOW}${BOLD}⚠️  AVISOS:${NC}"
+    echo -e "\n  ${YELLOW}${BOLD}⚠️  AVISOS:${NC}"
     for warning in "${WARNINGS[@]}"; do
-        echo -e "  ${YELLOW}• $warning${NC}"
+        echo -e "    ${YELLOW}• $warning${NC}"
     done
 fi
 
 # Exibe informações
 if [ ${#INFO[@]} -gt 0 ]; then
-    echo -e "\n${BLUE}${BOLD}ℹ️  INFORMAÇÕES ADICIONAIS:${NC}"
+    echo -e "\n  ${BLUE}${BOLD}ℹ️  INFORMAÇÕES ADICIONAIS:${NC}"
     for info in "${INFO[@]}"; do
-        echo -e "  ${BLUE}• $info${NC}"
+        echo -e "    ${BLUE}• $info${NC}"
     done
 fi
 
