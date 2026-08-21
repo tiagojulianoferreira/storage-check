@@ -2,7 +2,7 @@
 # Storage Check - Diagnóstico READ-ONLY para Linux
 # Autor: Tiago Ferreira
 # Repositório: https://github.com/tiagojulianoferreira/storage-check
-# Versão: 2.4 - Quadro comparativo com sintaxe simplificada
+# Versão: 2.5 - Alinhamento de tabela corrigido
 
 # Cores para output
 RED='\033[0;31m'
@@ -282,25 +282,28 @@ if command -v ioping &>/dev/null; then
         LATENCY_CLEAN=$(echo $LATENCY_RAW | sed 's/,/./')
         echo "  ⏱️  Latência média: ${LATENCY_CLEAN}ms"
         
-        if command -v bc &>/dev/null; then
-            LATENCY_NUM=$(echo "$LATENCY_CLEAN" | sed 's/,/./')
-            EXPECTED_NUM=$(echo "$EXPECTED_LATENCY" | sed 's/,/./')
-            
-            if (( $(echo "$LATENCY_NUM < $EXPECTED_NUM" | bc -l 2>/dev/null || echo 0) )); then
-                echo -e "  ${GREEN}✅ EXCELENTE (abaixo de ${EXPECTED_LATENCY}ms)${NC}"
-                CHECK_RESULTS+=("✅ LATÊNCIA: ${LATENCY_CLEAN}ms (Excelente)")
-            elif (( $(echo "$LATENCY_NUM < $EXPECTED_NUM * 2" | bc -l 2>/dev/null || echo 0) )); then
-                echo -e "  ${YELLOW}⚠️  ACEITÁVEL (esperado ${EXPECTED_LATENCY}ms)${NC}"
-                WARNINGS+=("Latência ${LATENCY_CLEAN}ms acima do esperado (${EXPECTED_LATENCY}ms)")
-                CHECK_RESULTS+=("🟡 LATÊNCIA: ${LATENCY_CLEAN}ms (Aceitável)")
-            else
-                echo -e "  ${RED}❌ LATÊNCIA MUITO ALTA (> $((EXPECTED_LATENCY*2))ms)${NC}"
-                PROBLEMS+=("Latência alta: ${LATENCY_CLEAN}ms (esperado ${EXPECTED_LATENCY}ms)")
-                CHECK_RESULTS+=("🔴 LATÊNCIA: ${LATENCY_CLEAN}ms (Muito Alta)")
-            fi
+        # Comparação segura SEM bc - usando apenas inteiros
+        LATENCY_INT=$(echo "$LATENCY_CLEAN" | cut -d'.' -f1 2>/dev/null)
+        EXPECTED_INT=$(echo "$EXPECTED_LATENCY" | cut -d'.' -f1 2>/dev/null)
+        
+        if [ -z "$LATENCY_INT" ]; then
+            LATENCY_INT=0
+        fi
+        if [ -z "$EXPECTED_INT" ]; then
+            EXPECTED_INT=1
+        fi
+        
+        if [ $LATENCY_INT -lt $EXPECTED_INT ] 2>/dev/null; then
+            echo -e "  ${GREEN}✅ EXCELENTE (abaixo de ${EXPECTED_LATENCY}ms)${NC}"
+            CHECK_RESULTS+=("✅ LATÊNCIA: ${LATENCY_CLEAN}ms (Excelente)")
+        elif [ $LATENCY_INT -lt $((EXPECTED_INT * 2)) ] 2>/dev/null; then
+            echo -e "  ${YELLOW}⚠️  ACEITÁVEL (esperado ${EXPECTED_LATENCY}ms)${NC}"
+            WARNINGS+=("Latência ${LATENCY_CLEAN}ms acima do esperado (${EXPECTED_LATENCY}ms)")
+            CHECK_RESULTS+=("🟡 LATÊNCIA: ${LATENCY_CLEAN}ms (Aceitável)")
         else
-            echo "  ⚠️ bc não instalado - comparação precisa não disponível"
-            WARNINGS+=("bc não instalado para comparação de latência")
+            echo -e "  ${RED}❌ LATÊNCIA MUITO ALTA (> $((EXPECTED_INT * 2))ms)${NC}"
+            PROBLEMS+=("Latência alta: ${LATENCY_CLEAN}ms (esperado ${EXPECTED_LATENCY}ms)")
+            CHECK_RESULTS+=("🔴 LATÊNCIA: ${LATENCY_CLEAN}ms (Muito Alta)")
         fi
     else
         echo "  ioping: sem dados coletados"
@@ -458,12 +461,17 @@ if command -v iostat &>/dev/null; then
         echo "     Leituras/s: ${IOPS_READ_CLEAN} | Escritas/s: ${IOPS_WRITE_CLEAN}"
         echo "     Utilização: ${UTIL_CLEAN}% | Tempo médio de espera: ${AWAIT_CLEAN}ms"
         
-        if command -v bc &>/dev/null; then
-            if (( $(echo "$UTIL_CLEAN > 80" | bc -l) )); then
+        if [ -n "$UTIL_RESULT" ]; then
+            UTIL_INT=$(echo "$UTIL_RESULT" | cut -d'.' -f1 2>/dev/null)
+            if [ -z "$UTIL_INT" ]; then
+                UTIL_INT=0
+            fi
+            
+            if [ $UTIL_INT -gt 80 ] 2>/dev/null; then
                 echo -e "  ${RED}❌ UTILIZAÇÃO MUITO ALTA (>80%)${NC}"
                 PROBLEMS+=("Utilização alta: ${UTIL_CLEAN}%")
                 CHECK_RESULTS+=("🔴 UTILIZAÇÃO: ${UTIL_CLEAN}% (Alta)")
-            elif (( $(echo "$UTIL_CLEAN > 50" | bc -l) )); then
+            elif [ $UTIL_INT -gt 50 ] 2>/dev/null; then
                 echo -e "  ${YELLOW}⚠️  UTILIZAÇÃO MODERADA (50-80%)${NC}"
                 WARNINGS+=("Utilização ${UTIL_CLEAN}%")
                 CHECK_RESULTS+=("🟡 UTILIZAÇÃO: ${UTIL_CLEAN}% (Moderada)")
@@ -471,21 +479,26 @@ if command -v iostat &>/dev/null; then
                 echo -e "  ${GREEN}✅ UTILIZAÇÃO BAIXA (<50%)${NC}"
                 CHECK_RESULTS+=("✅ UTILIZAÇÃO: ${UTIL_CLEAN}% (Baixa)")
             fi
+        fi
+        
+        if [ -n "$IOPS_RESULT" ]; then
+            IOPS_INT=$(echo "$IOPS_RESULT" | cut -d'.' -f1 2>/dev/null)
+            if [ -z "$IOPS_INT" ]; then
+                IOPS_INT=0
+            fi
             
-            if (( $(echo "$IOPS_READ_CLEAN >= $EXPECTED_IOPS" | bc -l) )); then
-                echo -e "  ${GREEN}✅ IOPS: Excelente ($IOPS_READ_CLEAN ≥ $EXPECTED_IOPS)${NC}"
-                CHECK_RESULTS+=("✅ IOPS: ${IOPS_READ_CLEAN} (Excelente)")
-            elif (( $(echo "$IOPS_READ_CLEAN >= $EXPECTED_IOPS * 0.5" | bc -l) )); then
+            if [ $IOPS_INT -ge $EXPECTED_IOPS ] 2>/dev/null; then
+                echo -e "  ${GREEN}✅ IOPS: Excelente ($IOPS_RESULT ≥ $EXPECTED_IOPS)${NC}"
+                CHECK_RESULTS+=("✅ IOPS: ${IOPS_RESULT} (Excelente)")
+            elif [ $IOPS_INT -ge $((EXPECTED_IOPS * 50 / 100)) ] 2>/dev/null; then
                 echo -e "  ${YELLOW}⚠️  IOPS: Aceitável (esperado $EXPECTED_IOPS)${NC}"
-                WARNINGS+=("IOPS ${IOPS_READ_CLEAN} abaixo do esperado (${EXPECTED_IOPS})")
-                CHECK_RESULTS+=("🟡 IOPS: ${IOPS_READ_CLEAN} (Aceitável)")
+                WARNINGS+=("IOPS ${IOPS_RESULT} abaixo do esperado (${EXPECTED_IOPS})")
+                CHECK_RESULTS+=("🟡 IOPS: ${IOPS_RESULT} (Aceitável)")
             else
                 echo -e "  ${YELLOW}ℹ️  IOPS: Baixo - Sistema ocioso?${NC}"
-                INFO+=("IOPS baixo ($IOPS_READ_CLEAN) - provavelmente sistema ocioso")
-                CHECK_RESULTS+=("ℹ️ IOPS: ${IOPS_READ_CLEAN} (Sistema ocioso)")
+                INFO+=("IOPS baixo ($IOPS_RESULT) - provavelmente sistema ocioso")
+                CHECK_RESULTS+=("ℹ️ IOPS: ${IOPS_RESULT} (Sistema ocioso)")
             fi
-        else
-            echo "  ⚠️ bc não instalado - comparação precisa não disponível"
         fi
     else
         echo "  Nenhum dado de I/O coletado"
@@ -564,20 +577,20 @@ for dev in sda nvme0n1; do
 done
 
 # ============================================================
-# QUADRO COMPARATIVO FINAL (VERSÃO SIMPLIFICADA)
+# QUADRO COMPARATIVO FINAL (VERSÃO COM ALINHAMENTO CORRIGIDO)
 # ============================================================
 
 echo -e "\n${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}${BOLD}              QUADRO COMPARATIVO - IDEAL vs DIAGNOSTICADO${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════════════════${NC}"
 
-# Função para obter ícone de status
-get_icon() {
+# Função para obter ícone de status (simplificada)
+get_icon_simple() {
     local value="$1"
     local expected="$2"
     local type="$3"
     
-    if [ -z "$value" ] || [ "$value" = "N/A" ]; then
+    if [ -z "$value" ] || [ "$value" = "N/A" ] || [ "$value" = "" ]; then
         echo "ℹ️"
         return
     fi
@@ -593,33 +606,26 @@ get_icon() {
             fi
             ;;
         "latency")
-            if command -v bc &>/dev/null; then
-                if (( $(echo "$value < $expected" | bc -l 2>/dev/null || echo 0) )); then
-                    echo "✅"
-                elif (( $(echo "$value < $expected * 2" | bc -l 2>/dev/null || echo 0) )); then
-                    echo "🟡"
-                else
-                    echo "🔴"
-                fi
+            value_int=$(echo "$value" | cut -d'.' -f1 2>/dev/null)
+            expected_int=$(echo "$expected" | cut -d'.' -f1 2>/dev/null)
+            if [ -z "$value_int" ]; then
+                value_int=0
+            fi
+            if [ -z "$expected_int" ]; then
+                expected_int=1
+            fi
+            if [ $value_int -lt $expected_int ] 2>/dev/null; then
+                echo "✅"
+            elif [ $value_int -lt $((expected_int * 2)) ] 2>/dev/null; then
+                echo "🟡"
             else
-                echo "ℹ️"
+                echo "🔴"
             fi
             ;;
-        "wear")
+        "wear"|"temp"|"swap")
             if [ -z "$value" ]; then
                 echo "ℹ️"
             elif [ "$value" -gt 80 ] 2>/dev/null; then
-                echo "🔴"
-            elif [ "$value" -gt 60 ] 2>/dev/null; then
-                echo "🟡"
-            else
-                echo "✅"
-            fi
-            ;;
-        "temp")
-            if [ -z "$value" ]; then
-                echo "ℹ️"
-            elif [ "$value" -gt 65 ] 2>/dev/null; then
                 echo "🔴"
             elif [ "$value" -gt 50 ] 2>/dev/null; then
                 echo "🟡"
@@ -630,23 +636,25 @@ get_icon() {
         "util")
             if [ -z "$value" ]; then
                 echo "ℹ️"
-            elif (( $(echo "$value > 80" | bc -l 2>/dev/null || echo 0) )); then
+            elif (( $(echo "$value > 80" | bc -l 2>/dev/null) )); then
                 echo "🔴"
-            elif (( $(echo "$value > 50" | bc -l 2>/dev/null || echo 0) )); then
+            elif (( $(echo "$value > 50" | bc -l 2>/dev/null) )); then
                 echo "🟡"
             else
                 echo "✅"
             fi
             ;;
-        "swap")
-            if [ -z "$value" ]; then
-                echo "ℹ️"
-            elif [ "$value" -gt 80 ] 2>/dev/null; then
-                echo "🔴"
-            elif [ "$value" -gt 50 ] 2>/dev/null; then
+        "iops")
+            value_int=$(echo "$value" | cut -d'.' -f1 2>/dev/null)
+            if [ -z "$value_int" ]; then
+                value_int=0
+            fi
+            if [ $value_int -ge $expected ] 2>/dev/null; then
+                echo "✅"
+            elif [ $value_int -ge $((expected * 50 / 100)) ] 2>/dev/null; then
                 echo "🟡"
             else
-                echo "✅"
+                echo "ℹ️"
             fi
             ;;
         *)
@@ -655,7 +663,7 @@ get_icon() {
     esac
 }
 
-# Verifica espaço
+# Extrai o valor do espaço
 SPACE_VALUE=""
 for result in "${CHECK_RESULTS[@]}"; do
     if [[ "$result" == *"ESPAÇO"* ]]; then
@@ -664,92 +672,100 @@ for result in "${CHECK_RESULTS[@]}"; do
     fi
 done
 
-# Extrai o valor de utilização para o quadro
-UTIL_NUM=""
-if [ -n "$UTIL_RESULT" ]; then
-    UTIL_NUM=$(echo "$UTIL_RESULT" | sed 's/,/./')
+# Ajusta para "N/A" se vazio
+if [ -z "$SPACE_VALUE" ]; then
+    SPACE_VALUE="N/A"
 fi
 
 echo ""
-echo "  ┌─────────────────────────┬──────────────────────┬──────────────────────┐"
-echo "  │ COMPONENTE              │ ESPERADO             │ DIAGNOSTICADO        │"
-echo "  ├─────────────────────────┼──────────────────────┼──────────────────────┤"
+echo "  +---------------------------+---------------------------+---------------------------+"
+echo "  | COMPONENTE                | ESPERADO                  | DIAGNOSTICADO             |"
+echo "  +---------------------------+---------------------------+---------------------------+"
+
+# Função para imprimir linha formatada
+print_table_row() {
+    local component="$1"
+    local expected="$2"
+    local diagnostic="$3"
+    
+    # Garante tamanhos fixos
+    printf "  | %-25s | %-25s | %-25s |\n" "$component" "$expected" "$diagnostic"
+}
 
 # Linha 1: Disco
-printf "  │ %-23s │ %-20s │ %-20s │\n" "Disco" "$DISK_TYPE" "$DISK_TYPE"
+print_table_row "Disco" "$DISK_TYPE" "$DISK_TYPE"
 
 # Linha 2: Espaço
-if [ -n "$SPACE_VALUE" ]; then
-    ICON=$(get_icon "$SPACE_VALUE" "" "space")
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Espaço em /" "< 90%" "$ICON" "${SPACE_VALUE}%"
+if [ "$SPACE_VALUE" != "N/A" ]; then
+    ICON=$(get_icon_simple "$SPACE_VALUE" "" "space")
+    print_table_row "Espaço em /" "< 90%" "$ICON ${SPACE_VALUE}%"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "Espaço em /" "< 90%" "✅ < 90%"
+    print_table_row "Espaço em /" "< 90%" "ℹ️ N/A"
 fi
 
 # Linha 3: Latência
 if [ -n "$LATENCY_CLEAN" ]; then
-    ICON=$(get_icon "$LATENCY_CLEAN" "$EXPECTED_LATENCY" "latency")
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Latência" "< ${EXPECTED_LATENCY}ms" "$ICON" "${LATENCY_CLEAN}ms"
+    ICON=$(get_icon_simple "$LATENCY_CLEAN" "$EXPECTED_LATENCY" "latency")
+    print_table_row "Latência" "< ${EXPECTED_LATENCY}ms" "$ICON ${LATENCY_CLEAN}ms"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "Latência" "< ${EXPECTED_LATENCY}ms" "ℹ️ N/A"
+    print_table_row "Latência" "< ${EXPECTED_LATENCY}ms" "ℹ️ N/A"
 fi
 
 # Linha 4: Velocidade
 if [ -n "$SPEED_RESULT" ]; then
-    ICON=$(get_icon "$SPEED_RESULT" "$EXPECTED_READ_MB" "speed")
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "✅" "${SPEED_RESULT}MB/s"
+    print_table_row "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "✅ ${SPEED_RESULT}MB/s"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "ℹ️ N/A"
+    print_table_row "Velocidade" "≥ ${EXPECTED_READ_MB}MB/s" "ℹ️ N/A"
 fi
 
 # Linha 5: Temperatura
 if [ -n "$TEMP_RESULT" ]; then
-    ICON=$(get_icon "$TEMP_RESULT" "" "temp")
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Temperatura" "< 50°C" "$ICON" "${TEMP_RESULT}°C"
+    ICON=$(get_icon_simple "$TEMP_RESULT" "" "temp")
+    print_table_row "Temperatura" "< 50°C" "$ICON ${TEMP_RESULT}°C"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "Temperatura" "< 50°C" "ℹ️ N/A"
+    print_table_row "Temperatura" "< 50°C" "ℹ️ N/A"
 fi
 
 # Linha 6: Desgaste
 if [ -n "$WEAR_RESULT" ]; then
-    ICON=$(get_icon "$WEAR_RESULT" "" "wear")
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Desgaste" "< 60%" "$ICON" "${WEAR_RESULT}%"
+    ICON=$(get_icon_simple "$WEAR_RESULT" "" "wear")
+    print_table_row "Desgaste" "< 60%" "$ICON ${WEAR_RESULT}%"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "Desgaste" "< 60%" "ℹ️ N/A"
+    print_table_row "Desgaste" "< 60%" "ℹ️ N/A"
 fi
 
 # Linha 7: Utilização
-if [ -n "$UTIL_NUM" ]; then
-    ICON=$(get_icon "$UTIL_NUM" "" "util")
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Utilização" "< 50%" "$ICON" "${UTIL_NUM}%"
+if [ -n "$UTIL_RESULT" ]; then
+    ICON=$(get_icon_simple "$UTIL_RESULT" "" "util")
+    print_table_row "Utilização" "< 50%" "$ICON ${UTIL_RESULT}%"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "Utilização" "< 50%" "ℹ️ N/A"
+    print_table_row "Utilização" "< 50%" "ℹ️ N/A"
 fi
 
 # Linha 8: IOPS
 if [ -n "$IOPS_RESULT" ]; then
-    ICON=$(get_icon "$IOPS_RESULT" "$EXPECTED_IOPS" "iops")
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "IOPS" "≥ ${EXPECTED_IOPS}" "✅" "${IOPS_RESULT}"
+    ICON=$(get_icon_simple "$IOPS_RESULT" "$EXPECTED_IOPS" "iops")
+    print_table_row "IOPS" "≥ ${EXPECTED_IOPS}" "$ICON ${IOPS_RESULT}"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "IOPS" "≥ ${EXPECTED_IOPS}" "ℹ️ N/A"
+    print_table_row "IOPS" "≥ ${EXPECTED_IOPS}" "ℹ️ N/A"
 fi
 
 # Linha 9: Swap
 if [ -n "$SWAP_RESULT" ]; then
-    ICON=$(get_icon "$SWAP_RESULT" "" "swap")
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Swap" "< 50%" "$ICON" "${SWAP_RESULT}%"
+    ICON=$(get_icon_simple "$SWAP_RESULT" "" "swap")
+    print_table_row "Swap" "< 50%" "$ICON ${SWAP_RESULT}%"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "Swap" "< 50%" "ℹ️ N/A"
+    print_table_row "Swap" "< 50%" "ℹ️ N/A"
 fi
 
 # Linha 10: Scheduler
 if [ -n "$SCHED_RESULT" ]; then
-    printf "  │ %-23s │ %-20s │ %s %-18s │\n" "Agendador" "none/noop/deadline" "✅" "$SCHED_RESULT"
+    print_table_row "Agendador" "none/noop/deadline" "✅ ${SCHED_RESULT}"
 else
-    printf "  │ %-23s │ %-20s │ %-20s │\n" "Agendador" "none/noop/deadline" "ℹ️ N/A"
+    print_table_row "Agendador" "none/noop/deadline" "ℹ️ N/A"
 fi
 
-echo "  └─────────────────────────┴──────────────────────┴──────────────────────┘"
+echo "  +---------------------------+---------------------------+---------------------------+"
 
 # ============================================================
 # LEGENDA E RESUMO DOS PROBLEMAS
